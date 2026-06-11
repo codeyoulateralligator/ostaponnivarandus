@@ -36,7 +36,7 @@ Required files:
 
 ```text
 cashrollitegija.py
-requirements.txt
+cashroll_requirements.txt
 ```
 
 Optional but recommended files:
@@ -83,7 +83,7 @@ python -m pip install --upgrade pip
 ## 3. Install requirements
 
 ```bash
-pip install -r requirements.txt
+pip install -r cashroll_requirements.txt
 ```
 
 The latest requirements are:
