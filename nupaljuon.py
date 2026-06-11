@@ -3,14 +3,30 @@
 import re
 import time
 from decimal import Decimal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 
 from bs4 import BeautifulSoup, Tag
 from curl_cffi import requests
 
 
 SELLER = "ostaponn"
-START_URL = f"https://www.osta.ee/?fuseaction=listing.seller&q%5Bseller%5D={SELLER}"
+
+
+def canonical_seller_page_url(start: int | None = None) -> str:
+    query = {
+        "fuseaction": "listing.seller",
+        "id": "1000",
+        "q[seller]": SELLER,
+        "q[cat]": "1000",
+    }
+
+    if start is not None:
+        query["start"] = str(start)
+
+    return "https://www.osta.ee/?" + urlencode(query)
+
+
+START_URL = canonical_seller_page_url(None)
 
 ITEM_RE = re.compile(r"/?([^/]+)-(\d{6,})\.html(?:[?#].*)?$")
 PRICE_RE = re.compile(r"(\d+(?:[.,]\d{1,2})?)\s*€")
@@ -21,6 +37,7 @@ def money_to_decimal(text: str) -> Decimal | None:
     match = PRICE_RE.search(text.replace("\xa0", " "))
     if not match:
         return None
+
     return Decimal(match.group(1).replace(",", "."))
 
 
@@ -44,6 +61,10 @@ def is_item_link(tag) -> bool:
 def item_id_from_link(tag: Tag) -> str:
     href = tag.get("href", "")
     match = ITEM_RE.search(href)
+
+    if not match:
+        raise ValueError(f"Could not extract item ID from href: {href}")
+
     return match.group(2)
 
 
@@ -61,7 +82,7 @@ def fetch_html(session, url: str) -> str:
     if response.status_code == 403:
         raise RuntimeError(
             "Got 403 Forbidden even with browser impersonation. "
-            "Try again later or use the Playwright fallback below."
+            "Osta.ee may be temporarily blocking scraping from your IP."
         )
 
     response.raise_for_status()
@@ -93,12 +114,10 @@ def extract_items_from_page(soup: BeautifulSoup, page_url: str) -> dict[str, dic
             continue
 
         title = txt(link)
-        url = urljoin(page_url, link.get("href", ""))
+        item_url = urljoin(page_url, link.get("href", ""))
 
         price = None
 
-        # Scan forward from the title link until the next title link.
-        # The first € amount after the title is the visible listing price.
         for node in link.next_elements:
             if node is link:
                 continue
@@ -112,31 +131,55 @@ def extract_items_from_page(soup: BeautifulSoup, page_url: str) -> dict[str, dic
                     break
 
         if price is None:
-            print(f"WARNING: no price found: {title} | {url}")
+            print(f"WARNING: no price found: {title} | {item_url}")
             continue
 
         items[item_id] = {
             "title": title,
             "price": price,
-            "url": url,
+            "url": item_url,
         }
 
     return items
+
+
+def normalize_seller_page_url(url: str) -> str | None:
+    parsed = urlparse(url)
+
+    # Reject /en, /ru, and any non-root paths.
+    if parsed.path not in ("", "/"):
+        return None
+
+    qs = parse_qs(parsed.query)
+
+    if qs.get("fuseaction", [""])[0] != "listing.seller":
+        return None
+
+    if qs.get("q[seller]", [""])[0] != SELLER:
+        return None
+
+    start_raw = qs.get("start", [None])[0]
+
+    if start_raw is None:
+        return canonical_seller_page_url(None)
+
+    try:
+        start = int(start_raw)
+    except ValueError:
+        return None
+
+    return canonical_seller_page_url(start)
 
 
 def extract_next_page_urls(soup: BeautifulSoup, current_url: str) -> set[str]:
     urls = set()
 
     for a in soup.find_all("a", href=True):
-        href = a["href"]
+        absolute = urljoin(current_url, a["href"])
+        normalized = normalize_seller_page_url(absolute)
 
-        if f"q%5Bseller%5D={SELLER}" not in href and f"q[seller]={SELLER}" not in href:
-            continue
-
-        if "start=" not in href:
-            continue
-
-        urls.add(urljoin(current_url, href))
+        if normalized is not None:
+            urls.add(normalized)
 
     return urls
 
@@ -190,6 +233,11 @@ def main():
         print()
         print("WARNING: item count does not match expected active listings.")
         print("Some items may have ended/started while scraping, or Osta.ee changed the page HTML.")
+
+    print()
+    print("Top 20 most expensive items:")
+    for item in sorted(all_items.values(), key=lambda x: x["price"], reverse=True)[:20]:
+        print(f'{item["price"]:>8.2f} € | {item["title"]} | {item["url"]}')
 
 
 if __name__ == "__main__":
