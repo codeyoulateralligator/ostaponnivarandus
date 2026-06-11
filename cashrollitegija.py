@@ -935,6 +935,36 @@ def print_inventory_stats(notes: list[Note], top_n: int = 100) -> None:
         console.print(f"[yellow]Warning:[/yellow] {len(missing_price_notes)} notes had no raw price in row[16].")
 
 
+def draw_multiline_text(
+    c: canvas.Canvas,
+    text: str,
+    x: float,
+    y: float,
+    max_width_pt: float,
+    font_name: str,
+    font_size: float,
+    line_h: float,
+    max_lines: int,
+) -> float:
+    """
+    Draw wrapped text and return the next y position below it.
+    """
+    lines = wrap_text_to_width(text, font_name, font_size, max_width_pt)
+
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        if len(lines[-1]) > 3:
+            lines[-1] = lines[-1][:-3] + "..."
+
+    c.setFont(font_name, font_size)
+
+    yy = y
+    for line in lines:
+        c.drawString(x, yy, line)
+        yy -= line_h
+
+    return yy
+
 def draw_description_box(
     c: canvas.Canvas,
     note: Note,
@@ -951,15 +981,28 @@ def draw_description_box(
 
     inner_pad = 1.4 * mm
     tx = x + inner_pad
-    ty = y + h - inner_pad - 5.4
+    top_y = y + h - inner_pad - 5.0
+    max_text_w = w - 2 * inner_pad
 
     title = note_title(note)
 
     c.setFillColor(colors.HexColor("#0f172a"))
-    c.setFont("Helvetica-Bold", 6.2)
-    c.drawString(tx, ty, title[:92])
 
-    details_top = ty - 6.0
+    # Multiline title instead of cutting it.
+    after_title_y = draw_multiline_text(
+        c=c,
+        text=title,
+        x=tx,
+        y=top_y,
+        max_width_pt=max_text_w,
+        font_name="Helvetica-Bold",
+        font_size=5.8,
+        line_h=6.0,
+        max_lines=3,
+    )
+
+    # Small gap below title.
+    details_top = after_title_y - 1.5
     available_h = details_top - y - inner_pad - 4.0
 
     c.setFillColor(colors.HexColor("#111827"))
@@ -969,10 +1012,10 @@ def draw_description_box(
         note_detail_lines(note),
         tx,
         details_top,
-        max_width_pt=w - 2 * inner_pad,
+        max_width_pt=max_text_w,
         max_height_pt=available_h,
-        start_size=5.25,
-        min_size=4.0,
+        start_size=5.15,
+        min_size=3.7,
     )
 
     c.setFillColor(colors.HexColor("#64748b"))
