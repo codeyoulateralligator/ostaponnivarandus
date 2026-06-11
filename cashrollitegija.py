@@ -8,6 +8,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, asdict
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Optional
@@ -18,6 +19,7 @@ from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, portrait
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 from rich import box
@@ -40,6 +42,7 @@ PDF_PATH = OUT_DIR / "cashroll_catalog.pdf"
 JSON_PATH = OUT_DIR / "cashroll_data.json"
 
 PLACEHOLDER_IMAGE = Path("missing_note.png")
+DEFAULT_TITLE_MONEY_IMAGE = Path("ostaponn_money.png")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -112,7 +115,6 @@ def safe_filename_piece(s: str) -> str:
 
 def parse_money_decimal(value: Any) -> Optional[Decimal]:
     s = clean(value)
-
     if not s:
         return None
 
@@ -182,6 +184,25 @@ def verify_image(path: Path) -> bool:
 def get_placeholder_path() -> Optional[str]:
     if PLACEHOLDER_IMAGE.exists():
         return str(PLACEHOLDER_IMAGE.resolve())
+    return None
+
+
+def find_title_money_image(path_arg: str = "") -> Optional[str]:
+    candidates = []
+
+    if path_arg:
+        candidates.append(Path(path_arg))
+
+    candidates.extend([
+        DEFAULT_TITLE_MONEY_IMAGE,
+        Path("ostaponn(1).png"),
+        Path("ostaponn.png"),
+    ])
+
+    for p in candidates:
+        if p.exists():
+            return str(p.resolve())
+
     return None
 
 
@@ -566,6 +587,39 @@ def draw_image_fit(
     )
 
 
+def draw_image_plain_fit(
+    c: canvas.Canvas,
+    path: Optional[str],
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+) -> None:
+    if not path or not Path(path).exists():
+        c.setFillColor(colors.HexColor("#75622f"))
+        c.setFont("Helvetica-Bold", 16)
+        c.drawCentredString(x + w / 2, y + h / 2, "Missing title image")
+        return
+
+    iw, ih = image_size(path)
+    if iw <= 0 or ih <= 0:
+        return
+
+    scale = min(w / iw, h / ih)
+    dw = iw * scale
+    dh = ih * scale
+
+    c.drawImage(
+        path,
+        x + (w - dw) / 2,
+        y + (h - dh) / 2,
+        dw,
+        dh,
+        preserveAspectRatio=True,
+        mask="auto",
+    )
+
+
 def wrap_text_to_width(text: str, font_name: str, font_size: float, max_width_pt: float) -> list[str]:
     output = []
 
@@ -586,7 +640,6 @@ def wrap_text_to_width(text: str, font_name: str, font_size: float, max_width_pt
             else:
                 if line:
                     output.append(line)
-
                 line = word
 
         if line:
@@ -595,67 +648,11 @@ def wrap_text_to_width(text: str, font_name: str, font_size: float, max_width_pt
     return output
 
 
-def draw_label_value_lines(
-    c: canvas.Canvas,
+def build_label_value_rendered_lines(
     lines: list[tuple[str, str, bool]],
-    x: float,
-    y: float,
+    size: float,
     max_width_pt: float,
-    max_height_pt: float,
-    start_size: float = 5.4,
-    min_size: float = 4.1,
-) -> None:
-    size = start_size
-
-    while size >= min_size:
-        line_h = size * 1.12
-        rendered_lines = []
-
-        for label, value, whole_bold in lines:
-            if whole_bold:
-                text = f"{label}{value}"
-                wrapped = wrap_text_to_width(text, "Helvetica-Bold", size, max_width_pt)
-                rendered_lines.extend([("BOLD_FULL", w) for w in wrapped])
-            else:
-                prefix_w = stringWidth(label, "Helvetica-Bold", size)
-                available_for_first_value = max_width_pt - prefix_w
-                value_words = value.split()
-
-                if not value_words:
-                    rendered_lines.append(("LABEL_VALUE", label, ""))
-                    continue
-
-                current = ""
-                first_line_done = False
-
-                for word in value_words:
-                    test = word if not current else f"{current} {word}"
-                    limit = available_for_first_value if not first_line_done else max_width_pt
-
-                    if stringWidth(test, "Helvetica", size) <= limit:
-                        current = test
-                    else:
-                        if not first_line_done:
-                            rendered_lines.append(("LABEL_VALUE", label, current))
-                            first_line_done = True
-                        else:
-                            rendered_lines.append(("NORMAL", current))
-                        current = word
-
-                if current:
-                    if not first_line_done:
-                        rendered_lines.append(("LABEL_VALUE", label, current))
-                    else:
-                        rendered_lines.append(("NORMAL", current))
-
-        if len(rendered_lines) * line_h <= max_height_pt:
-            break
-
-        size -= 0.2
-
-    line_h = size * 1.12
-    max_lines = max(1, int(max_height_pt / line_h))
-
+) -> list[tuple]:
     rendered_lines = []
 
     for label, value, whole_bold in lines:
@@ -695,9 +692,41 @@ def draw_label_value_lines(
                 else:
                     rendered_lines.append(("NORMAL", current))
 
-    rendered_lines = rendered_lines[:max_lines]
+    return rendered_lines
 
-    if len(rendered_lines) == max_lines and rendered_lines:
+
+def draw_label_value_lines(
+    c: canvas.Canvas,
+    lines: list[tuple[str, str, bool]],
+    x: float,
+    y: float,
+    max_width_pt: float,
+    max_height_pt: float,
+    start_size: float = 5.4,
+    min_size: float = 4.1,
+) -> None:
+    size = start_size
+    best_lines = []
+
+    while size >= min_size:
+        rendered_lines = build_label_value_rendered_lines(lines, size, max_width_pt)
+        line_h = size * 1.12
+
+        if len(rendered_lines) * line_h <= max_height_pt:
+            best_lines = rendered_lines
+            break
+
+        size -= 0.2
+
+    if size < min_size:
+        size = min_size
+        best_lines = build_label_value_rendered_lines(lines, size, max_width_pt)
+
+    line_h = size * 1.12
+    max_lines = max(1, int(max_height_pt / line_h))
+    rendered_lines = best_lines[:max_lines]
+
+    if len(best_lines) > max_lines and rendered_lines:
         last = rendered_lines[-1]
         if last[0] == "NORMAL":
             rendered_lines[-1] = ("NORMAL", last[1][:-3] + "..." if len(last[1]) > 3 else last[1])
@@ -787,6 +816,123 @@ def note_detail_lines(note: Note) -> list[tuple[str, str, bool]]:
         lines.append(("Comment: ", note.comment.strip(), False))
 
     return lines
+
+
+def compute_inventory_summary(notes: list[Note]) -> dict[str, Any]:
+    priced_notes = []
+    missing_price_notes = []
+
+    raw_total = Decimal("0")
+    shipping_total = Decimal("0")
+    total_with_shipping = Decimal("0")
+
+    for note in notes:
+        raw_price = money_str_to_decimal(note.item_price_eur)
+        shipping = money_str_to_decimal(note.shipping_eur)
+
+        if raw_price is None:
+            missing_price_notes.append(note)
+            continue
+
+        shipping = shipping or Decimal("0")
+        total = raw_price + shipping
+
+        raw_total += raw_price
+        shipping_total += shipping
+        total_with_shipping += total
+
+        priced_notes.append((note, raw_price, shipping, total))
+
+    priced_notes.sort(key=lambda x: x[1], reverse=True)
+
+    avg_raw = Decimal("0")
+    if priced_notes:
+        avg_raw = raw_total / Decimal(len(priced_notes))
+
+    return {
+        "total_notes": len(notes),
+        "priced_count": len(priced_notes),
+        "missing_price_count": len(missing_price_notes),
+        "raw_total": raw_total,
+        "shipping_total": shipping_total,
+        "total_with_shipping": total_with_shipping,
+        "avg_raw": avg_raw,
+        "priced_notes": priced_notes,
+        "missing_price_notes": missing_price_notes,
+        "created_at": datetime.now(),
+    }
+
+
+def print_inventory_stats(notes: list[Note], top_n: int = 100) -> None:
+    console = Console()
+    summary = compute_inventory_summary(notes)
+
+    priced_notes = summary["priced_notes"]
+    missing_price_notes = summary["missing_price_notes"]
+
+    console.print()
+    console.rule("[bold cyan]Inventory statistics")
+
+    console.print(f"[bold]Total notes processed:[/bold] [cyan]{summary['total_notes']}[/cyan]")
+    console.print(f"[bold]Notes with raw price:[/bold] [green]{summary['priced_count']}[/green]")
+    console.print(f"[bold]Notes missing raw price:[/bold] [red]{summary['missing_price_count']}[/red]")
+    console.print(f"[bold]Total inventory value, raw price only:[/bold] [bold yellow]{summary['raw_total']:.2f} €[/bold yellow]")
+    console.print(f"[bold]Total shipping value:[/bold] [magenta]{summary['shipping_total']:.2f} €[/magenta]")
+    console.print(f"[bold]Total including shipping:[/bold] [bold green]{summary['total_with_shipping']:.2f} €[/bold green]")
+
+    if priced_notes:
+        max_note, max_price, _, _ = priced_notes[0]
+        min_note, min_price, _, _ = priced_notes[-1]
+
+        console.print(f"[bold]Average raw price:[/bold] [cyan]{summary['avg_raw']:.2f} €[/cyan]")
+        console.print(
+            f"[bold]Most expensive:[/bold] [yellow]{max_price:.2f} €[/yellow] "
+            f"[dim]ID {max_note.item_id}[/dim] {note_title(max_note)}"
+        )
+        console.print(
+            f"[bold]Cheapest priced:[/bold] [yellow]{min_price:.2f} €[/yellow] "
+            f"[dim]ID {min_note.item_id}[/dim] {note_title(min_note)}"
+        )
+
+    console.print()
+    console.rule(f"[bold cyan]Top {min(top_n, len(priced_notes))} most expensive notes by raw price")
+
+    table = Table(
+        title=f"Top {min(top_n, len(priced_notes))} most expensive notes",
+        box=box.ROUNDED,
+        header_style="bold white on dark_blue",
+        show_lines=False,
+        row_styles=["none", "dim"],
+    )
+
+    table.add_column("#", justify="right", style="bold cyan", width=4)
+    table.add_column("ID", justify="right", style="bright_black", width=6)
+    table.add_column("Note", style="white", overflow="fold", max_width=48)
+    table.add_column("Country", style="cyan", overflow="fold", max_width=18)
+    table.add_column("Year", justify="right", style="bright_black", width=6)
+    table.add_column("Grade", style="magenta", width=10)
+    table.add_column("Raw price", justify="right", style="bold yellow", width=12)
+    table.add_column("Shipping", justify="right", style="blue", width=10)
+    table.add_column("Total", justify="right", style="bold green", width=12)
+
+    for rank, (note, raw_price, shipping, total) in enumerate(priced_notes[:top_n], start=1):
+        table.add_row(
+            str(rank),
+            note.item_id,
+            note_title(note),
+            note.country,
+            note.year,
+            note.grade or note.grade_full,
+            f"{raw_price:.2f} €",
+            f"{shipping:.2f} €" if shipping else "",
+            f"{total:.2f} €",
+        )
+
+    console.print(table)
+
+    if missing_price_notes:
+        console.print()
+        console.print(f"[yellow]Warning:[/yellow] {len(missing_price_notes)} notes had no raw price in row[16].")
 
 
 def draw_description_box(
@@ -884,29 +1030,186 @@ def draw_note_card(
     )
 
 
-def make_pdf(notes: list[Note], pdf_path: Path, per_page: int = 8) -> None:
+def draw_cover_summary_table(
+    c: canvas.Canvas,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    summary: dict[str, Any],
+) -> None:
+    dark_green = colors.HexColor("#102f2a")
+    gold = colors.HexColor("#c8a75a")
+    pale = colors.HexColor("#f3ecd8")
+    row_fill = colors.HexColor("#efe3bf")
+
+    c.saveState()
+
+    c.setFillColor(pale)
+    c.setStrokeColor(gold)
+    c.setLineWidth(1.3)
+    c.roundRect(x, y, w, h, 8, stroke=1, fill=1)
+
+    header_h = 18
+    c.setFillColor(dark_green)
+    c.roundRect(x + 6, y + h - header_h - 6, w - 12, header_h, 5, stroke=0, fill=1)
+
+    c.setFillColor(colors.HexColor("#f4e7bf"))
+    c.setFont("Helvetica-Bold", 9.2)
+    c.drawCentredString(x + w / 2, y + h - header_h / 2 - 9.2, "KOGU KOLLEKTSIOONI KOKKUVÕTE")
+
+    rows = [
+        ("Kirjeid kokku", str(summary["total_notes"])),
+        ("Hinnastatud kirjeid", str(summary["priced_count"])),
+        ("Hinnata kirjeid", str(summary["missing_price_count"])),
+        ("Toorhindade summa", f"{summary['raw_total']:.2f} €"),
+        ("Saatmiskulude summa", f"{summary['shipping_total']:.2f} €"),
+        ("Kokku koos saatmisega", f"{summary['total_with_shipping']:.2f} €"),
+        ("Keskmine toorhind", f"{summary['avg_raw']:.2f} €"),
+        ("Koostatud", summary["created_at"].strftime("%Y-%m-%d %H:%M")),
+    ]
+
+    inner_x = x + 10
+    inner_w = w - 20
+    table_top = y + h - header_h - 14
+    table_bottom = y + 10
+    table_h = table_top - table_bottom
+    row_h = table_h / len(rows)
+
+    for i, (label, value) in enumerate(rows):
+        ry = table_top - (i + 1) * row_h
+
+        if i % 2 == 0:
+            c.setFillColor(row_fill)
+            c.rect(inner_x, ry, inner_w, row_h, stroke=0, fill=1)
+
+        c.setStrokeColor(colors.HexColor("#d1b96c"))
+        c.setLineWidth(0.3)
+        c.line(inner_x, ry, inner_x + inner_w, ry)
+
+        c.setFillColor(dark_green)
+        c.setFont("Helvetica-Bold", 8.6)
+        c.drawString(inner_x + 5, ry + row_h / 2 - 3.0, label)
+
+        c.setFillColor(colors.HexColor("#4b3718"))
+        c.setFont("Helvetica-Bold", 8.8)
+        c.drawRightString(inner_x + inner_w - 5, ry + row_h / 2 - 3.0, value)
+
+    c.restoreState()
+
+
+def draw_title_page(
+    c: canvas.Canvas,
+    notes: list[Note],
+    page_w: float,
+    page_h: float,
+    title_money_image: Optional[str],
+) -> None:
+    summary = compute_inventory_summary(notes)
+
+    cream = colors.HexColor("#eee8d8")
+    dark_green = colors.HexColor("#102f2a")
+    gold = colors.HexColor("#b9923c")
+    pale_gold = colors.HexColor("#e8d39a")
+    brown = colors.HexColor("#4b3718")
+
+    c.setFillColor(cream)
+    c.rect(0, 0, page_w, page_h, stroke=0, fill=1)
+
+    margin = 9 * mm
+    c.setStrokeColor(gold)
+    c.setLineWidth(1.4)
+    c.roundRect(margin, margin, page_w - 2 * margin, page_h - 2 * margin, 10, stroke=1, fill=0)
+    c.setStrokeColor(colors.HexColor("#d7c48f"))
+    c.setLineWidth(0.8)
+    c.roundRect(margin + 4, margin + 4, page_w - 2 * (margin + 4), page_h - 2 * (margin + 4), 9, stroke=1, fill=0)
+
+    c.setFillColor(dark_green)
+    c.setFont("Helvetica-Bold", 22)
+    c.drawCentredString(page_w / 2, page_h - 21 * mm, "Ostaponni paberrahade kataloog")
+
+    c.setFillColor(brown)
+    c.setFont("Helvetica", 10.5)
+    c.drawCentredString(page_w / 2, page_h - 27 * mm, "Kollektsioon, hinnad ja ülevaade")
+
+    image_box_w = page_w - 28 * mm
+    image_box_h = 96 * mm
+    image_box_x = (page_w - image_box_w) / 2
+    image_box_y = page_h - 36 * mm - image_box_h
+
+    c.setFillColor(colors.HexColor("#f8f2df"))
+    c.setStrokeColor(gold)
+    c.setLineWidth(1.3)
+    c.roundRect(image_box_x, image_box_y, image_box_w, image_box_h, 8, stroke=1, fill=1)
+
+    c.setStrokeColor(dark_green)
+    c.setLineWidth(0.8)
+    c.roundRect(image_box_x + 4, image_box_y + 4, image_box_w - 8, image_box_h - 8, 6, stroke=1, fill=0)
+
+    draw_image_plain_fit(
+        c,
+        title_money_image,
+        image_box_x + 7,
+        image_box_y + 7,
+        image_box_w - 14,
+        image_box_h - 14,
+    )
+
+    table_w = page_w - 44 * mm
+    table_h = 76 * mm
+    table_x = (page_w - table_w) / 2
+    table_y = image_box_y - table_h - 14 * mm
+
+    draw_cover_summary_table(c, table_x, table_y, table_w, table_h, summary)
+
+    c.setFillColor(pale_gold)
+    c.setStrokeColor(gold)
+    c.setLineWidth(0.6)
+    c.roundRect(page_w / 2 - 38 * mm, 16 * mm, 76 * mm, 10 * mm, 4, stroke=1, fill=1)
+
+    c.setFillColor(dark_green)
+    c.setFont("Helvetica-Bold", 7.8)
+    c.drawCentredString(
+        page_w / 2,
+        19.2 * mm,
+        f"Genereeritud {summary['created_at'].strftime('%Y-%m-%d %H:%M')}"
+    )
+
+
+def make_pdf(
+    notes: list[Note],
+    pdf_path: Path,
+    per_page: int = 8,
+    title_money_image: Optional[str] = None,
+) -> None:
     page_size = portrait(A4)
     c = canvas.Canvas(str(pdf_path), pagesize=page_size)
 
     page_w, page_h = page_size
+
+    draw_title_page(c, notes, page_w, page_h, title_money_image)
+
+    note_pages = (len(notes) + per_page - 1) // per_page
+    total_pages = 1 + note_pages
+
+    if note_pages > 0:
+        c.showPage()
+
     margin = 8 * mm
     gap = 3 * mm
-
     rows = per_page
 
     cell_w = page_w - 2 * margin
     cell_h = (page_h - 2 * margin - (rows - 1) * gap) / rows
 
-    total_pages = (len(notes) + per_page - 1) // per_page if notes else 1
-
     for idx, note in enumerate(notes):
         pos = idx % per_page
 
         if idx > 0 and pos == 0:
-            page_num = idx // per_page
+            current_page = 2 + idx // per_page
             c.setFont("Helvetica", 8)
             c.setFillColor(colors.HexColor("#5b6470"))
-            c.drawCentredString(page_w / 2, 5 * mm, f"Page {page_num} / {total_pages}")
+            c.drawCentredString(page_w / 2, 5 * mm, f"Page {current_page - 1} / {total_pages}")
             c.showPage()
 
         row = pos
@@ -915,106 +1218,12 @@ def make_pdf(notes: list[Note], pdf_path: Path, per_page: int = 8) -> None:
 
         draw_note_card(c, note, idx, x, y, cell_w, cell_h)
 
-    c.setFont("Helvetica", 8)
-    c.setFillColor(colors.HexColor("#5b6470"))
-    c.drawCentredString(page_w / 2, 5 * mm, f"Page {total_pages} / {total_pages}")
+    if note_pages > 0:
+        c.setFont("Helvetica", 8)
+        c.setFillColor(colors.HexColor("#5b6470"))
+        c.drawCentredString(page_w / 2, 5 * mm, f"Page {total_pages} / {total_pages}")
 
     c.save()
-
-
-def print_inventory_stats(notes: list[Note], top_n: int = 100) -> None:
-    console = Console()
-
-    priced_notes = []
-    missing_price_notes = []
-
-    raw_total = Decimal("0")
-    shipping_total = Decimal("0")
-    total_with_shipping = Decimal("0")
-
-    for note in notes:
-        raw_price = money_str_to_decimal(note.item_price_eur)
-        shipping = money_str_to_decimal(note.shipping_eur)
-
-        if raw_price is None:
-            missing_price_notes.append(note)
-            continue
-
-        shipping = shipping or Decimal("0")
-        total = raw_price + shipping
-
-        raw_total += raw_price
-        shipping_total += shipping
-        total_with_shipping += total
-
-        priced_notes.append((note, raw_price, shipping, total))
-
-    priced_notes.sort(key=lambda x: x[1], reverse=True)
-
-    console.print()
-    console.rule("[bold cyan]Inventory statistics")
-
-    console.print(f"[bold]Total notes processed:[/bold] [cyan]{len(notes)}[/cyan]")
-    console.print(f"[bold]Notes with raw price:[/bold] [green]{len(priced_notes)}[/green]")
-    console.print(f"[bold]Notes missing raw price:[/bold] [red]{len(missing_price_notes)}[/red]")
-    console.print(f"[bold]Total inventory value, raw price only:[/bold] [bold yellow]{raw_total:.2f} €[/bold yellow]")
-    console.print(f"[bold]Total shipping value:[/bold] [magenta]{shipping_total:.2f} €[/magenta]")
-    console.print(f"[bold]Total including shipping:[/bold] [bold green]{total_with_shipping:.2f} €[/bold green]")
-
-    if priced_notes:
-        avg_price = raw_total / Decimal(len(priced_notes))
-        max_note, max_price, _, _ = priced_notes[0]
-        min_note, min_price, _, _ = priced_notes[-1]
-
-        console.print(f"[bold]Average raw price:[/bold] [cyan]{avg_price:.2f} €[/cyan]")
-        console.print(
-            f"[bold]Most expensive:[/bold] [yellow]{max_price:.2f} €[/yellow] "
-            f"[dim]ID {max_note.item_id}[/dim] {note_title(max_note)}"
-        )
-        console.print(
-            f"[bold]Cheapest priced:[/bold] [yellow]{min_price:.2f} €[/yellow] "
-            f"[dim]ID {min_note.item_id}[/dim] {note_title(min_note)}"
-        )
-
-    console.print()
-    console.rule(f"[bold cyan]Top {min(top_n, len(priced_notes))} most expensive notes by raw price")
-
-    table = Table(
-        title=f"Top {min(top_n, len(priced_notes))} most expensive notes",
-        box=box.ROUNDED,
-        header_style="bold white on dark_blue",
-        show_lines=False,
-        row_styles=["none", "dim"],
-    )
-
-    table.add_column("#", justify="right", style="bold cyan", width=4)
-    table.add_column("ID", justify="right", style="bright_black", width=6)
-    table.add_column("Note", style="white", overflow="fold", max_width=48)
-    table.add_column("Country", style="cyan", overflow="fold", max_width=18)
-    table.add_column("Year", justify="right", style="bright_black", width=6)
-    table.add_column("Grade", style="magenta", width=10)
-    table.add_column("Raw price", justify="right", style="bold yellow", width=12)
-    table.add_column("Shipping", justify="right", style="blue", width=10)
-    table.add_column("Total", justify="right", style="bold green", width=12)
-
-    for rank, (note, raw_price, shipping, total) in enumerate(priced_notes[:top_n], start=1):
-        table.add_row(
-            str(rank),
-            note.item_id,
-            note_title(note),
-            note.country,
-            note.year,
-            note.grade or note.grade_full,
-            f"{raw_price:.2f} €",
-            f"{shipping:.2f} €" if shipping else "",
-            f"{total:.2f} €",
-        )
-
-    console.print(table)
-
-    if missing_price_notes:
-        console.print()
-        console.print(f"[yellow]Warning:[/yellow] {len(missing_price_notes)} notes had no raw price in row[16].")
 
 
 def main() -> None:
@@ -1030,6 +1239,7 @@ def main() -> None:
     parser.add_argument("--no-value-debug", action="store_true", help="Disable console debug lines for currency/value retrieval.")
     parser.add_argument("--no-cost-debug", action="store_true", help="Disable console debug lines for item price/shipping.")
     parser.add_argument("--top", type=int, default=100, help="How many most expensive notes to show in the console table.")
+    parser.add_argument("--title-money-image", default="", help="Premade title-page money image, e.g. ostaponn_money.png")
     args = parser.parse_args()
 
     ensure_dirs()
@@ -1038,6 +1248,14 @@ def main() -> None:
         print()
         print(f"WARNING: Placeholder image not found: {PLACEHOLDER_IMAGE}")
         print("Save the banknote placeholder image as 'missing_note.png' next to this script.")
+        print()
+
+    title_money_image = find_title_money_image(args.title_money_image)
+    if not title_money_image:
+        print()
+        print("WARNING: Title money image not found.")
+        print("Save it as 'ostaponn_money.png' next to this script, or use:")
+        print('  --title-money-image "ostaponn(1).png"')
         print()
 
     session = requests.Session()
@@ -1114,7 +1332,12 @@ def main() -> None:
     print_inventory_stats(notes, top_n=args.top)
 
     print(f"Creating PDF: {args.out}")
-    make_pdf(notes, Path(args.out), per_page=args.per_page)
+    make_pdf(
+        notes,
+        Path(args.out),
+        per_page=args.per_page,
+        title_money_image=title_money_image,
+    )
 
     print()
     print("Done.")
