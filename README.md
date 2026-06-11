@@ -101,25 +101,25 @@ rich>=13.7.0
 With login:
 
 ```bash
-python3 cashrollitegija.py --user ponn --password ponn --limit 10
+python3 cashrollitegija.py --user xxx --password xxx --limit 10
 ```
 
 Safer password prompt:
 
 ```bash
-python3 cashrollitegija.py --user ponn --password-stdin --limit 10
+python3 cashrollitegija.py --user xxx --password-stdin --limit 10
 ```
 
 With the premade title-page money image:
 
 ```bash
-python3 cashrollitegija.py --user ponn --password ponn --limit 10 --title-money-image "ostaponn_money.png"
+python3 cashrollitegija.py --user xxx --password xxx --limit 10 --title-money-image "ostaponn_money.png"
 ```
 
 Without value/cost debug spam:
 
 ```bash
-python3 cashrollitegija.py --user ponn --password ponn --limit 10 --no-value-debug --no-cost-debug
+python3 cashrollitegija.py --user xxx --password xxx --limit 10 --no-value-debug --no-cost-debug
 ```
 
 ---
@@ -127,13 +127,13 @@ python3 cashrollitegija.py --user ponn --password ponn --limit 10 --no-value-deb
 ## 5. Full export
 
 ```bash
-python3 cashrollitegija.py --user ponn --password ponn --title-money-image "ostaponn_money.png" --no-value-debug --no-cost-debug
+python3 cashrollitegija.py --user xxx --password xxx --title-money-image "ostaponn_money.png" --no-value-debug --no-cost-debug
 ```
 
 Safer password prompt:
 
 ```bash
-python3 cashrollitegija.py --user ponn --password-stdin --title-money-image "ostaponn_money.png" --no-value-debug --no-cost-debug
+python3 cashrollitegija.py --user xxx --password-stdin --title-money-image "ostaponn_money.png" --no-value-debug --no-cost-debug
 ```
 
 ---
@@ -325,7 +325,7 @@ If it prints that price/shipping columns are not visible, login probably failed.
 ### Rebuild output from scratch
 
 ```bash
-rm -rf cashroll_output && python3 cashrollitegija.py --user ponn --password-stdin --title-money-image "ostaponn_money.png" --no-value-debug --no-cost-debug
+rm -rf cashroll_output && python3 cashrollitegija.py --user xxx --password-stdin --title-money-image "ostaponn_money.png" --no-value-debug --no-cost-debug
 ```
 
 ---
