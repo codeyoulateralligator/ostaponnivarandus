@@ -26,7 +26,7 @@ Recommended folder layout:
 ```text
 cashroll_project/
 ├── cashrollitegija.py
-├── requirements.txt
+├── cashroll_requirements.txt
 ├── missing_note.png
 ├── ostaponn_money.png
 └── cashroll_output/
@@ -53,7 +53,7 @@ ostaponn_money.png
 You can also pass a custom title image with:
 
 ```bash
-python3 cashrollitegija.py --title-money-image "ostaponn(1).png"
+python3 cashrollitegija.py --title-money-image "ostaponn.png"
 ```
 
 ---
