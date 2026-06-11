@@ -1,146 +1,145 @@
-# Cashroll PDF Exporter Setup Tutorial
+# Cashroll PDF Catalog Generator
 
-This guide shows how to create a clean Python virtual environment, install the required packages, and run `cashrollitegija.py`.
+This project creates a PDF catalog from the ca$hroll banknote collection site.
 
-The script fetches note data directly from:
+It can:
+
+- log in to the site
+- fetch the full collection table from `db_get_table.php`
+- download front/back note images
+- calculate and display currency value where available
+- read logged-in item price and shipping fields
+- create a portrait A4 PDF catalog
+- add a styled title page using a premade Ostaponn money image
+- print colorful console inventory statistics
+- show the top most expensive notes by raw price
+
+---
+
+## 1. Project files
+
+Recommended folder layout:
 
 ```text
-http://hirve.myftp.org:7777/cashroll/db_get_table.php
+cashroll_project/
+├── cashrollitegija.py
+├── requirements.txt
+├── missing_note.png
+├── ostaponn_money.png
+└── cashroll_output/
 ```
 
-and creates a PDF catalog in:
+Required files:
 
 ```text
-cashroll_output/cashroll_catalog.pdf
+cashrollitegija.py
+requirements.txt
 ```
 
-## 1. Go to your project folder
+Optional but recommended files:
+
+```text
+missing_note.png
+ostaponn_money.png
+```
+
+`missing_note.png` is used when a banknote image is missing.
+
+`ostaponn_money.png` is used as the premade title-page money image.
+
+You can also pass a custom title image with:
 
 ```bash
-cd ~/Devel/ostaponnivarandus
+python3 cashrollitegija.py --title-money-image "ostaponn(1).png"
 ```
 
-Or create a new folder:
-
-```bash
-mkdir -p ~/Devel/cashroll_pdf && cd ~/Devel/cashroll_pdf
-```
+---
 
 ## 2. Create a Python virtual environment
+
+From your project folder:
 
 ```bash
 python3 -m venv .venv
 ```
 
-## 3. Activate the virtual environment
+Activate it:
 
 ```bash
 source .venv/bin/activate
 ```
 
-After activation, your terminal should show something like:
-
-```text
-(.venv) raigo@A224:~/Devel/cashroll_pdf$
-```
-
-## 4. Upgrade pip
+Upgrade pip:
 
 ```bash
 python -m pip install --upgrade pip
 ```
 
-## 5. Install requirements
+---
 
-This ZIP includes a premade requirements file named:
-
-```text
-cashroll_requirements.txt
-```
-
-Install it with:
+## 3. Install requirements
 
 ```bash
-pip install -r cashroll_requirements.txt
+pip install -r requirements.txt
 ```
 
-## 6. Add the script
-
-Create the script file:
-
-```bash
-nano cashrollitegija.py
-```
-
-Paste the Python script into it, then save:
+The latest requirements are:
 
 ```text
-CTRL+O
-ENTER
-CTRL+X
+requests>=2.31.0
+Pillow>=10.0.0
+reportlab>=4.0.0
+tqdm>=4.66.0
+rich>=13.7.0
 ```
 
-Make it executable:
+---
+
+## 4. Run a small test
+
+With login:
 
 ```bash
-chmod +x cashrollitegija.py
+python3 cashrollitegija.py --user ponn --password ponn --limit 10
 ```
 
-## 7. Add the missing-image placeholder
-
-The script expects a placeholder image named:
-
-```text
-missing_note.png
-```
-
-Put your banknote placeholder image in the same folder as the script:
-
-```text
-cashrollitegija.py
-missing_note.png
-cashroll_requirements.txt
-```
-
-Example folder layout:
-
-```text
-cashroll_pdf/
-├── .venv/
-├── cashrollitegija.py
-├── missing_note.png
-└── cashroll_requirements.txt
-```
-
-The placeholder is used whenever a banknote has no front or back image.
-
-## 8. Run a small test
-
-Run only 16 notes first:
+Safer password prompt:
 
 ```bash
-python cashrollitegija.py --limit 16
+python3 cashrollitegija.py --user ponn --password-stdin --limit 10
 ```
 
-This should create:
-
-```text
-cashroll_output/cashroll_catalog.pdf
-```
-
-Open it:
+With the premade title-page money image:
 
 ```bash
-xdg-open cashroll_output/cashroll_catalog.pdf
+python3 cashrollitegija.py --user ponn --password ponn --limit 10 --title-money-image "ostaponn_money.png"
 ```
 
-## 9. Run the full export
+Without value/cost debug spam:
 
 ```bash
-python cashrollitegija.py
+python3 cashrollitegija.py --user ponn --password ponn --limit 10 --no-value-debug --no-cost-debug
 ```
 
-Output files:
+---
+
+## 5. Full export
+
+```bash
+python3 cashrollitegija.py --user ponn --password ponn --title-money-image "ostaponn_money.png" --no-value-debug --no-cost-debug
+```
+
+Safer password prompt:
+
+```bash
+python3 cashrollitegija.py --user ponn --password-stdin --title-money-image "ostaponn_money.png" --no-value-debug --no-cost-debug
+```
+
+---
+
+## 6. Output files
+
+The script creates:
 
 ```text
 cashroll_output/
@@ -150,92 +149,190 @@ cashroll_output/
 └── images/
 ```
 
-## 10. Useful commands
+Main output:
 
-Run with a custom output PDF name:
-
-```bash
-python cashrollitegija.py --out my_cashroll_catalog.pdf
+```text
+cashroll_output/cashroll_catalog.pdf
 ```
 
-Run with fewer notes per page:
+Open it on Linux:
 
 ```bash
-python cashrollitegija.py --per-page 6
+xdg-open cashroll_output/cashroll_catalog.pdf
 ```
 
-Run without downloading images:
+---
+
+## 7. Command-line options
+
+### Output path
 
 ```bash
-python cashrollitegija.py --no-images
+python3 cashrollitegija.py --out my_catalog.pdf
 ```
 
-Run with a larger delay between requests:
+### Limit number of rows
 
 ```bash
-python cashrollitegija.py --delay 0.1
+python3 cashrollitegija.py --limit 20
 ```
 
-## 11. Deactivate the virtual environment
+Useful for testing.
 
-When finished:
+### Items per PDF page
+
+Default is 8.
 
 ```bash
-deactivate
+python3 cashrollitegija.py --per-page 8
 ```
 
-## 12. Reactivate later
-
-Next time you return to the project:
+### Disable note image downloading
 
 ```bash
-cd ~/Devel/cashroll_pdf && source .venv/bin/activate
+python3 cashrollitegija.py --no-images
 ```
 
-Then run:
+### Delay between rows
+
+Default is `0.03`.
 
 ```bash
-python cashrollitegija.py
+python3 cashrollitegija.py --delay 0.1
 ```
 
-## Troubleshooting
-
-### `ModuleNotFoundError: No module named 'requests'`
-
-Your virtual environment is not active or requirements were not installed.
-
-Fix:
+### Login
 
 ```bash
-source .venv/bin/activate && pip install -r cashroll_requirements.txt
+python3 cashrollitegija.py --user USERNAME --password PASSWORD
 ```
 
-### `missing_note.png` warning
+Safer:
 
-The placeholder file is missing.
+```bash
+python3 cashrollitegija.py --user USERNAME --password-stdin
+```
 
-Fix: put the banknote placeholder image next to the script and name it:
+### Disable debug output
+
+```bash
+python3 cashrollitegija.py --no-value-debug --no-cost-debug
+```
+
+### Top expensive notes count
+
+Default is 100.
+
+```bash
+python3 cashrollitegija.py --top 25
+```
+
+### Title page money image
+
+Default search order:
+
+```text
+ostaponn_money.png
+ostaponn(1).png
+ostaponn.png
+```
+
+Explicit:
+
+```bash
+python3 cashrollitegija.py --title-money-image "ostaponn_money.png"
+```
+
+---
+
+## 8. Login and price fields
+
+When logged in, the table has extra fields:
+
+```text
+row[16] = raw item price
+row[17] = shipping
+```
+
+The script adds this to each PDF item description:
+
+```text
+Cost: item price + shipping = total
+```
+
+It also prints inventory stats at the end:
+
+```text
+Total notes processed
+Notes with raw price
+Notes missing raw price
+Total inventory value, raw price only
+Total shipping value
+Total including shipping
+Average raw price
+Most expensive note
+Cheapest priced note
+Top N most expensive notes
+```
+
+---
+
+## 9. Troubleshooting
+
+### `ModuleNotFoundError`
+
+Activate the virtual environment and reinstall:
+
+```bash
+source .venv/bin/activate && pip install -r requirements.txt
+```
+
+### Missing title image warning
+
+Save the premade money image as:
+
+```text
+ostaponn_money.png
+```
+
+or run with:
+
+```bash
+python3 cashrollitegija.py --title-money-image "your_file.png"
+```
+
+### Missing placeholder warning
+
+Save a placeholder banknote image as:
 
 ```text
 missing_note.png
 ```
 
-### PDF is old or unchanged
+### Price/shipping not visible
 
-Delete old output and run again:
+Make sure you are logged in.
 
-```bash
-rm -rf cashroll_output && python cashrollitegija.py
+The script should print:
+
+```text
+Logged-in price/shipping columns appear to exist: row[16], row[17]
 ```
 
-### Check installed packages
+If it prints that price/shipping columns are not visible, login probably failed.
+
+### Rebuild output from scratch
 
 ```bash
-pip list
+rm -rf cashroll_output && python3 cashrollitegija.py --user ponn --password-stdin --title-money-image "ostaponn_money.png" --no-value-debug --no-cost-debug
 ```
 
-### Save exact package versions after everything works
+---
+
+## 10. Freeze exact versions after it works
 
 ```bash
-pip freeze > cashroll_requirements_locked.txt
+pip freeze > requirements_locked.txt
 ```
+
+Use `requirements_locked.txt` only if you want exact package versions from your current machine.
