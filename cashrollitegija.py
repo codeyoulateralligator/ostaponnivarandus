@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
 import argparse
+import getpass
 import hashlib
 import html
 import json
 import re
-import textwrap
 import time
 from dataclasses import dataclass, asdict
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
@@ -17,11 +18,18 @@ from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, portrait
 from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
+from rich import box
+from rich.console import Console
+from rich.table import Table
 from tqdm import tqdm
 
 
 BASE = "http://hirve.myftp.org:7777/cashroll/"
+LIST_URL = urljoin(BASE, "list.php")
+LOGIN_URL = urljoin(BASE, "login.php")
+SESSION_URL = urljoin(BASE, "session.php")
 TABLE_URL = urljoin(BASE, "db_get_table.php")
 RATES_URL = urljoin(BASE, "db_get_currency_rates.php")
 
@@ -31,14 +39,13 @@ DEBUG_DIR = OUT_DIR / "debug"
 PDF_PATH = OUT_DIR / "cashroll_catalog.pdf"
 JSON_PATH = OUT_DIR / "cashroll_data.json"
 
-# Put your banknote placeholder image next to this script with this exact filename.
 PLACEHOLDER_IMAGE = Path("missing_note.png")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
     "Accept": "application/json,text/javascript,*/*;q=0.9",
-    "Referer": urljoin(BASE, "list.php"),
+    "Referer": LIST_URL,
 }
 
 GRADE_FULL = {
@@ -77,6 +84,10 @@ class Note:
     comment: str
     current_value_eur: str
     current_value_debug: str
+    item_price_eur: str
+    shipping_eur: str
+    total_cost_eur: str
+    cost_debug: str
 
 
 def ensure_dirs() -> None:
@@ -88,10 +99,8 @@ def ensure_dirs() -> None:
 def clean(s: Any) -> str:
     if s is None:
         return ""
-
     s = html.unescape(str(s))
     s = re.sub(r"<[^>]+>", " ", s)
-
     return " ".join(s.replace("\xa0", " ").split())
 
 
@@ -101,18 +110,43 @@ def safe_filename_piece(s: str) -> str:
     return s[:80] if s else "unknown"
 
 
+def parse_money_decimal(value: Any) -> Optional[Decimal]:
+    s = clean(value)
+
+    if not s:
+        return None
+
+    s = s.replace("€", "").replace(",", ".")
+    s = re.sub(r"[^0-9.\-]", "", s)
+
+    if not s:
+        return None
+
+    try:
+        return Decimal(s)
+    except InvalidOperation:
+        return None
+
+
+def money_str_to_decimal(value: str) -> Optional[Decimal]:
+    return parse_money_decimal(value)
+
+
+def fmt_money(value: Optional[Decimal]) -> str:
+    if value is None:
+        return ""
+    return f"{value:.2f} €"
+
+
 def abs_url(url: str) -> str:
     url = clean(url)
-
     if not url:
         return ""
-
     return urljoin(BASE, url)
 
 
 def image_original_url(url: str) -> str:
     url = abs_url(url)
-
     if not url:
         return ""
 
@@ -133,7 +167,6 @@ def safe_img_name(url: str) -> str:
         ext = ".jpg"
 
     h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
-
     return f"{h}{ext}"
 
 
@@ -149,7 +182,6 @@ def verify_image(path: Path) -> bool:
 def get_placeholder_path() -> Optional[str]:
     if PLACEHOLDER_IMAGE.exists():
         return str(PLACEHOLDER_IMAGE.resolve())
-
     return None
 
 
@@ -188,8 +220,78 @@ def download_image(session: requests.Session, url: str) -> Optional[str]:
             continue
 
     print(f"WARNING: failed image: {url}")
-
     return None
+
+
+def get_session_info(session: requests.Session) -> dict[str, Any]:
+    try:
+        r = session.get(SESSION_URL, headers=HEADERS, timeout=20)
+        r.raise_for_status()
+
+        try:
+            return r.json()
+        except Exception:
+            return {"raw": r.text[:300]}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def login(session: requests.Session, username: str, password: str) -> bool:
+    print(f"Logging in as: {username}")
+
+    try:
+        session.get(LIST_URL, headers=HEADERS, timeout=30).raise_for_status()
+    except Exception as e:
+        print(f"WARNING: initial list.php request failed before login: {e}")
+
+    payload = {
+        "username": username,
+        "password": password,
+        "remember_me": "0",
+    }
+
+    r = session.post(
+        LOGIN_URL,
+        headers={
+            **HEADERS,
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+        },
+        data=payload,
+        timeout=30,
+    )
+    r.raise_for_status()
+
+    raw = r.text.strip()
+    DEBUG_DIR.joinpath("login_response.txt").write_text(raw, encoding="utf-8", errors="ignore")
+
+    try:
+        data = r.json()
+    except Exception:
+        data = {"raw": raw}
+
+    print(f"Login response: {json.dumps(data, ensure_ascii=False)}")
+
+    session_info = get_session_info(session)
+    DEBUG_DIR.joinpath("session_after_login.json").write_text(
+        json.dumps(session_info, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    session_user = clean(session_info.get("session_user", ""))
+
+    if session_user:
+        print(f"Login OK. Session user: {session_user}")
+        return True
+
+    session_error = clean(data.get("session_error", "")) if isinstance(data, dict) else ""
+    if session_error:
+        print(f"Login failed: {session_error}")
+    else:
+        print("Login may have failed: session_user is empty.")
+
+    return False
 
 
 def fetch_table(session: requests.Session) -> list[list[Any]]:
@@ -255,7 +357,6 @@ def get_current_value_debug(
         )
 
         r.raise_for_status()
-
         raw = r.text.strip()
 
         try:
@@ -299,11 +400,38 @@ def get_current_value_debug(
         return "N/A", f"request/error: {e}"
 
 
+def extract_cost_fields(row: list[Any]) -> tuple[str, str, str, str]:
+    raw_item_price = row[16] if len(row) > 16 else None
+    raw_shipping = row[17] if len(row) > 17 else None
+
+    item_price = parse_money_decimal(raw_item_price)
+    shipping = parse_money_decimal(raw_shipping)
+
+    item_price_str = fmt_money(item_price)
+    shipping_str = fmt_money(shipping)
+
+    total = None
+    if item_price is not None or shipping is not None:
+        total = (item_price or Decimal("0")) + (shipping or Decimal("0"))
+
+    total_str = fmt_money(total)
+
+    debug = (
+        f"row_len={len(row)} | "
+        f"raw_price={raw_item_price!r} -> {item_price_str or 'N/A'} | "
+        f"raw_shipping={raw_shipping!r} -> {shipping_str or 'N/A'} | "
+        f"total={total_str or 'N/A'}"
+    )
+
+    return item_price_str, shipping_str, total_str, debug
+
+
 def row_to_note(
     row: list[Any],
     session: requests.Session,
     download_images: bool = True,
     debug_values: bool = True,
+    debug_costs: bool = True,
 ) -> Note:
     def val(i: int) -> str:
         return clean(row[i]) if i < len(row) else ""
@@ -319,6 +447,8 @@ def row_to_note(
         item_id=val(0),
     )
 
+    item_price_eur, shipping_eur, total_cost_eur, cost_debug = extract_cost_fields(row)
+
     if debug_values:
         print(
             "[VALUE DEBUG] "
@@ -328,6 +458,14 @@ def row_to_note(
             f"year={val(6)} | "
             f"pdf_value={current_value_eur} | "
             f"{current_value_debug}"
+        )
+
+    if debug_costs:
+        print(
+            "[COST DEBUG] "
+            f"ID={val(0)} | "
+            f"{val(5)} {val(4)} ({val(3)}) | "
+            f"{cost_debug}"
         )
 
     placeholder = get_placeholder_path()
@@ -361,6 +499,10 @@ def row_to_note(
         comment=val(13),
         current_value_eur=current_value_eur,
         current_value_debug=current_value_debug,
+        item_price_eur=item_price_eur,
+        shipping_eur=shipping_eur,
+        total_cost_eur=total_cost_eur,
+        cost_debug=cost_debug,
     )
 
 
@@ -383,10 +525,6 @@ def draw_image_fit(
     w: float,
     h: float,
 ) -> None:
-    """
-    Draw image inside a tight box. The box is sized close to a banknote aspect ratio,
-    so there is less left/right whitespace.
-    """
     c.setStrokeColor(colors.HexColor("#bcc6d3"))
     c.setLineWidth(0.5)
     c.setFillColor(colors.white)
@@ -428,66 +566,165 @@ def draw_image_fit(
     )
 
 
-def wrapped_lines(text: str, width: int) -> list[str]:
-    lines = []
+def wrap_text_to_width(text: str, font_name: str, font_size: float, max_width_pt: float) -> list[str]:
+    output = []
 
-    for raw in text.splitlines():
-        lines.extend(textwrap.wrap(raw, width=width) or [""])
+    for raw_line in text.splitlines():
+        words = raw_line.split()
 
-    return lines
+        if not words:
+            output.append("")
+            continue
+
+        line = ""
+
+        for word in words:
+            test = word if not line else f"{line} {word}"
+
+            if stringWidth(test, font_name, font_size) <= max_width_pt:
+                line = test
+            else:
+                if line:
+                    output.append(line)
+
+                line = word
+
+        if line:
+            output.append(line)
+
+    return output
 
 
-def draw_fitted_wrapped(
+def draw_label_value_lines(
     c: canvas.Canvas,
-    text: str,
+    lines: list[tuple[str, str, bool]],
     x: float,
     y: float,
     max_width_pt: float,
     max_height_pt: float,
-    start_size: float = 5.7,
-    min_size: float = 4.2,
-    step: float = 0.2,
-    line_spacing: float = 1.10,
+    start_size: float = 5.4,
+    min_size: float = 4.1,
 ) -> None:
     size = start_size
 
     while size >= min_size:
-        avg_char_width = max(1.0, size * 0.50)
-        width_chars = max(18, int(max_width_pt / avg_char_width))
-        lines = wrapped_lines(text, width_chars)
-        line_h = size * line_spacing
-        total_h = len(lines) * line_h
+        line_h = size * 1.12
+        rendered_lines = []
 
-        if total_h <= max_height_pt:
-            c.setFont("Helvetica", size)
-            yy = y
+        for label, value, whole_bold in lines:
+            if whole_bold:
+                text = f"{label}{value}"
+                wrapped = wrap_text_to_width(text, "Helvetica-Bold", size, max_width_pt)
+                rendered_lines.extend([("BOLD_FULL", w) for w in wrapped])
+            else:
+                prefix_w = stringWidth(label, "Helvetica-Bold", size)
+                available_for_first_value = max_width_pt - prefix_w
+                value_words = value.split()
 
-            for line in lines:
-                c.drawString(x, yy, line)
-                yy -= line_h
+                if not value_words:
+                    rendered_lines.append(("LABEL_VALUE", label, ""))
+                    continue
 
-            return
+                current = ""
+                first_line_done = False
 
-        size -= step
+                for word in value_words:
+                    test = word if not current else f"{current} {word}"
+                    limit = available_for_first_value if not first_line_done else max_width_pt
 
-    size = min_size
-    avg_char_width = max(1.0, size * 0.50)
-    width_chars = max(18, int(max_width_pt / avg_char_width))
-    lines = wrapped_lines(text, width_chars)
-    line_h = size * line_spacing
+                    if stringWidth(test, "Helvetica", size) <= limit:
+                        current = test
+                    else:
+                        if not first_line_done:
+                            rendered_lines.append(("LABEL_VALUE", label, current))
+                            first_line_done = True
+                        else:
+                            rendered_lines.append(("NORMAL", current))
+                        current = word
+
+                if current:
+                    if not first_line_done:
+                        rendered_lines.append(("LABEL_VALUE", label, current))
+                    else:
+                        rendered_lines.append(("NORMAL", current))
+
+        if len(rendered_lines) * line_h <= max_height_pt:
+            break
+
+        size -= 0.2
+
+    line_h = size * 1.12
     max_lines = max(1, int(max_height_pt / line_h))
-    lines = lines[:max_lines]
 
-    if lines:
-        last = lines[-1]
-        if len(last) > 3:
-            lines[-1] = last[:-3] + "..."
+    rendered_lines = []
 
-    c.setFont("Helvetica", size)
+    for label, value, whole_bold in lines:
+        if whole_bold:
+            text = f"{label}{value}"
+            wrapped = wrap_text_to_width(text, "Helvetica-Bold", size, max_width_pt)
+            rendered_lines.extend([("BOLD_FULL", w) for w in wrapped])
+        else:
+            prefix_w = stringWidth(label, "Helvetica-Bold", size)
+            available_for_first_value = max_width_pt - prefix_w
+            value_words = value.split()
+
+            if not value_words:
+                rendered_lines.append(("LABEL_VALUE", label, ""))
+                continue
+
+            current = ""
+            first_line_done = False
+
+            for word in value_words:
+                test = word if not current else f"{current} {word}"
+                limit = available_for_first_value if not first_line_done else max_width_pt
+
+                if stringWidth(test, "Helvetica", size) <= limit:
+                    current = test
+                else:
+                    if not first_line_done:
+                        rendered_lines.append(("LABEL_VALUE", label, current))
+                        first_line_done = True
+                    else:
+                        rendered_lines.append(("NORMAL", current))
+                    current = word
+
+            if current:
+                if not first_line_done:
+                    rendered_lines.append(("LABEL_VALUE", label, current))
+                else:
+                    rendered_lines.append(("NORMAL", current))
+
+    rendered_lines = rendered_lines[:max_lines]
+
+    if len(rendered_lines) == max_lines and rendered_lines:
+        last = rendered_lines[-1]
+        if last[0] == "NORMAL":
+            rendered_lines[-1] = ("NORMAL", last[1][:-3] + "..." if len(last[1]) > 3 else last[1])
+        elif last[0] == "BOLD_FULL":
+            rendered_lines[-1] = ("BOLD_FULL", last[1][:-3] + "..." if len(last[1]) > 3 else last[1])
+        elif last[0] == "LABEL_VALUE":
+            rendered_lines[-1] = ("LABEL_VALUE", last[1], last[2][:-3] + "..." if len(last[2]) > 3 else last[2])
+
     yy = y
 
-    for line in lines:
-        c.drawString(x, yy, line)
+    for item in rendered_lines:
+        if item[0] == "BOLD_FULL":
+            _, text = item
+            c.setFont("Helvetica-Bold", size)
+            c.drawString(x, yy, text)
+        elif item[0] == "LABEL_VALUE":
+            _, label, value = item
+            c.setFont("Helvetica-Bold", size)
+            c.drawString(x, yy, label)
+            label_w = stringWidth(label, "Helvetica-Bold", size)
+            c.setFont("Helvetica", size)
+            c.drawString(x + label_w, yy, value)
+        else:
+            _, text = item
+            c.setFont("Helvetica", size)
+            c.drawString(x, yy, text)
+
         yy -= line_h
 
 
@@ -508,22 +745,48 @@ def note_title(note: Note) -> str:
     return title
 
 
-def note_details(note: Note) -> str:
-    lines = [
-        f"Country: {note.country}",
-        f"Year: {note.year}",
-        f"Currency code: {note.currency_code}",
-        f"Value: {note.current_value_eur}",
-        f"Catalog code: {note.catalog_code}",
-        f"Series: {note.series}",
-        f"Grade: {note.grade_full}",
-        f"Status: {note.status}",
+def cost_display(note: Note) -> str:
+    if not note.item_price_eur and not note.shipping_eur and not note.total_cost_eur:
+        return ""
+
+    if note.item_price_eur and note.shipping_eur:
+        return f"{note.item_price_eur} + {note.shipping_eur} shipping = {note.total_cost_eur}"
+
+    if note.item_price_eur:
+        return note.item_price_eur
+
+    if note.shipping_eur:
+        return f"{note.shipping_eur} shipping"
+
+    return note.total_cost_eur
+
+
+def note_detail_lines(note: Note) -> list[tuple[str, str, bool]]:
+    lines: list[tuple[str, str, bool]] = []
+
+    cost = cost_display(note)
+    if cost:
+        lines.append(("Cost: ", cost, True))
+
+    normal = [
+        ("Country: ", note.country),
+        ("Year: ", note.year),
+        ("Currency code: ", note.currency_code),
+        ("Value: ", note.current_value_eur),
+        ("Catalog code: ", note.catalog_code),
+        ("Series: ", note.series),
+        ("Grade: ", note.grade_full),
+        ("Status: ", note.status),
     ]
 
-    if note.comment:
-        lines.append(f"Comment: {note.comment.strip()}")
+    for label, value in normal:
+        if value:
+            lines.append((label, value, False))
 
-    return "\n".join(line for line in lines if not line.endswith(": "))
+    if note.comment:
+        lines.append(("Comment: ", note.comment.strip(), False))
+
+    return lines
 
 
 def draw_description_box(
@@ -547,24 +810,23 @@ def draw_description_box(
     title = note_title(note)
 
     c.setFillColor(colors.HexColor("#0f172a"))
-    c.setFont("Helvetica-Bold", 6.4)
-    c.drawString(tx, ty, title[:90])
+    c.setFont("Helvetica-Bold", 6.2)
+    c.drawString(tx, ty, title[:92])
 
     details_top = ty - 6.0
     available_h = details_top - y - inner_pad - 4.0
 
     c.setFillColor(colors.HexColor("#111827"))
-    draw_fitted_wrapped(
+
+    draw_label_value_lines(
         c,
-        note_details(note),
+        note_detail_lines(note),
         tx,
         details_top,
         max_width_pt=w - 2 * inner_pad,
         max_height_pt=available_h,
-        start_size=5.5,
-        min_size=4.1,
-        step=0.2,
-        line_spacing=1.08,
+        start_size=5.25,
+        min_size=4.0,
     )
 
     c.setFillColor(colors.HexColor("#64748b"))
@@ -586,7 +848,6 @@ def draw_note_card(
     c.setLineWidth(0.7)
     c.roundRect(x, y, w, h, 4, stroke=1, fill=1)
 
-    # Very tight card padding so image boxes rise almost to the card border.
     pad = 1.4 * mm
     gap = 1.7 * mm
 
@@ -595,16 +856,12 @@ def draw_note_card(
     iw = w - 2 * pad
     ih = h - 2 * pad
 
-    # Images now use full card height because title moved to the right box.
     img_h = ih
 
-    # Banknotes are usually about 2.05–2.35 wide for their height.
-    # This keeps the white image box tighter and removes wasted left/right space.
     preferred_note_box_ratio = 2.28
     img_w = img_h * preferred_note_box_ratio
 
-    # Do not let the two image boxes eat too much space.
-    max_image_total_w = iw * 0.66
+    max_image_total_w = iw * 0.62
     if (img_w * 2 + gap) > max_image_total_w:
         img_w = (max_image_total_w - gap) / 2
 
@@ -628,9 +885,6 @@ def draw_note_card(
 
 
 def make_pdf(notes: list[Note], pdf_path: Path, per_page: int = 8) -> None:
-    """
-    Portrait A4, 1 column, 8 rows.
-    """
     page_size = portrait(A4)
     c = canvas.Canvas(str(pdf_path), pagesize=page_size)
 
@@ -668,6 +922,101 @@ def make_pdf(notes: list[Note], pdf_path: Path, per_page: int = 8) -> None:
     c.save()
 
 
+def print_inventory_stats(notes: list[Note], top_n: int = 100) -> None:
+    console = Console()
+
+    priced_notes = []
+    missing_price_notes = []
+
+    raw_total = Decimal("0")
+    shipping_total = Decimal("0")
+    total_with_shipping = Decimal("0")
+
+    for note in notes:
+        raw_price = money_str_to_decimal(note.item_price_eur)
+        shipping = money_str_to_decimal(note.shipping_eur)
+
+        if raw_price is None:
+            missing_price_notes.append(note)
+            continue
+
+        shipping = shipping or Decimal("0")
+        total = raw_price + shipping
+
+        raw_total += raw_price
+        shipping_total += shipping
+        total_with_shipping += total
+
+        priced_notes.append((note, raw_price, shipping, total))
+
+    priced_notes.sort(key=lambda x: x[1], reverse=True)
+
+    console.print()
+    console.rule("[bold cyan]Inventory statistics")
+
+    console.print(f"[bold]Total notes processed:[/bold] [cyan]{len(notes)}[/cyan]")
+    console.print(f"[bold]Notes with raw price:[/bold] [green]{len(priced_notes)}[/green]")
+    console.print(f"[bold]Notes missing raw price:[/bold] [red]{len(missing_price_notes)}[/red]")
+    console.print(f"[bold]Total inventory value, raw price only:[/bold] [bold yellow]{raw_total:.2f} €[/bold yellow]")
+    console.print(f"[bold]Total shipping value:[/bold] [magenta]{shipping_total:.2f} €[/magenta]")
+    console.print(f"[bold]Total including shipping:[/bold] [bold green]{total_with_shipping:.2f} €[/bold green]")
+
+    if priced_notes:
+        avg_price = raw_total / Decimal(len(priced_notes))
+        max_note, max_price, _, _ = priced_notes[0]
+        min_note, min_price, _, _ = priced_notes[-1]
+
+        console.print(f"[bold]Average raw price:[/bold] [cyan]{avg_price:.2f} €[/cyan]")
+        console.print(
+            f"[bold]Most expensive:[/bold] [yellow]{max_price:.2f} €[/yellow] "
+            f"[dim]ID {max_note.item_id}[/dim] {note_title(max_note)}"
+        )
+        console.print(
+            f"[bold]Cheapest priced:[/bold] [yellow]{min_price:.2f} €[/yellow] "
+            f"[dim]ID {min_note.item_id}[/dim] {note_title(min_note)}"
+        )
+
+    console.print()
+    console.rule(f"[bold cyan]Top {min(top_n, len(priced_notes))} most expensive notes by raw price")
+
+    table = Table(
+        title=f"Top {min(top_n, len(priced_notes))} most expensive notes",
+        box=box.ROUNDED,
+        header_style="bold white on dark_blue",
+        show_lines=False,
+        row_styles=["none", "dim"],
+    )
+
+    table.add_column("#", justify="right", style="bold cyan", width=4)
+    table.add_column("ID", justify="right", style="bright_black", width=6)
+    table.add_column("Note", style="white", overflow="fold", max_width=48)
+    table.add_column("Country", style="cyan", overflow="fold", max_width=18)
+    table.add_column("Year", justify="right", style="bright_black", width=6)
+    table.add_column("Grade", style="magenta", width=10)
+    table.add_column("Raw price", justify="right", style="bold yellow", width=12)
+    table.add_column("Shipping", justify="right", style="blue", width=10)
+    table.add_column("Total", justify="right", style="bold green", width=12)
+
+    for rank, (note, raw_price, shipping, total) in enumerate(priced_notes[:top_n], start=1):
+        table.add_row(
+            str(rank),
+            note.item_id,
+            note_title(note),
+            note.country,
+            note.year,
+            note.grade or note.grade_full,
+            f"{raw_price:.2f} €",
+            f"{shipping:.2f} €" if shipping else "",
+            f"{total:.2f} €",
+        )
+
+    console.print(table)
+
+    if missing_price_notes:
+        console.print()
+        console.print(f"[yellow]Warning:[/yellow] {len(missing_price_notes)} notes had no raw price in row[16].")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=str(PDF_PATH))
@@ -675,11 +1024,12 @@ def main() -> None:
     parser.add_argument("--per-page", type=int, default=8)
     parser.add_argument("--no-images", action="store_true")
     parser.add_argument("--delay", type=float, default=0.03)
-    parser.add_argument(
-        "--no-value-debug",
-        action="store_true",
-        help="Disable console debug lines for currency/value retrieval.",
-    )
+    parser.add_argument("--user", default="", help="Cashroll username.")
+    parser.add_argument("--password", default="", help="Cashroll password. Safer: use --password-stdin.")
+    parser.add_argument("--password-stdin", action="store_true", help="Ask password interactively.")
+    parser.add_argument("--no-value-debug", action="store_true", help="Disable console debug lines for currency/value retrieval.")
+    parser.add_argument("--no-cost-debug", action="store_true", help="Disable console debug lines for item price/shipping.")
+    parser.add_argument("--top", type=int, default=100, help="How many most expensive notes to show in the console table.")
     args = parser.parse_args()
 
     ensure_dirs()
@@ -693,9 +1043,37 @@ def main() -> None:
     session = requests.Session()
     session.headers.update(HEADERS)
 
+    password = args.password
+    if args.password_stdin:
+        password = getpass.getpass("Cashroll password: ")
+
+    if args.user:
+        if not password:
+            password = getpass.getpass("Cashroll password: ")
+
+        ok = login(session, args.user, password)
+
+        if not ok:
+            print()
+            print("WARNING: login did not confirm a session user.")
+            print("Continuing anyway, but price/shipping fields may be missing.")
+            print()
+    else:
+        print("No --user supplied. Running without login; price/shipping fields will probably be missing.")
+
+    session_info = get_session_info(session)
+    print(f"Session info before table fetch: {json.dumps(session_info, ensure_ascii=False)}")
+
     print(f"Fetching table JSON: {TABLE_URL}")
     rows = fetch_table(session)
     print(f"Rows found: {len(rows)}")
+
+    if rows:
+        print(f"First row length: {len(rows[0])}")
+        if len(rows[0]) > 17:
+            print("Logged-in price/shipping columns appear to exist: row[16], row[17]")
+        else:
+            print("Price/shipping columns not visible. You are probably not logged in.")
 
     if args.limit > 0:
         rows = rows[:args.limit]
@@ -709,6 +1087,7 @@ def main() -> None:
                 session=session,
                 download_images=not args.no_images,
                 debug_values=not args.no_value_debug,
+                debug_costs=not args.no_cost_debug,
             )
             notes.append(note)
         except Exception as e:
@@ -731,6 +1110,8 @@ def main() -> None:
         json.dumps([asdict(n) for n in notes], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+    print_inventory_stats(notes, top_n=args.top)
 
     print(f"Creating PDF: {args.out}")
     make_pdf(notes, Path(args.out), per_page=args.per_page)
