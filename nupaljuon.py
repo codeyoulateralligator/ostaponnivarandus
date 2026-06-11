@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 
+import csv
 import re
 import time
+from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 
+import matplotlib
+
+matplotlib.use("TkAgg")
+
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 from bs4 import BeautifulSoup, Tag
 from curl_cffi import requests
 
 
 SELLER = "ostaponn"
+HISTORY_FILE = Path("osta_inventory_history.csv")
 
 
 def canonical_seller_page_url(start: int | None = None) -> str:
@@ -146,7 +156,7 @@ def extract_items_from_page(soup: BeautifulSoup, page_url: str) -> dict[str, dic
 def normalize_seller_page_url(url: str) -> str | None:
     parsed = urlparse(url)
 
-    # Reject /en, /ru, and any non-root paths.
+    # Reject /en, /ru, and other language/path variants.
     if parsed.path not in ("", "/"):
         return None
 
@@ -182,6 +192,161 @@ def extract_next_page_urls(soup: BeautifulSoup, current_url: str) -> set[str]:
             urls.add(normalized)
 
     return urls
+
+
+def save_history_point(total_value: Decimal, item_count: int, expected_count: int | None) -> None:
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    file_exists = HISTORY_FILE.exists()
+
+    with HISTORY_FILE.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+
+        if not file_exists:
+            writer.writerow(["timestamp", "total_value_eur", "item_count", "expected_count"])
+
+        writer.writerow([
+            timestamp,
+            f"{total_value:.2f}",
+            item_count,
+            expected_count if expected_count is not None else "",
+        ])
+
+    print(f"Saved history point to {HISTORY_FILE}: {timestamp} | {total_value:.2f} €")
+
+
+def load_history() -> tuple[list[datetime], list[float], list[int]]:
+    timestamps = []
+    values = []
+    item_counts = []
+
+    if not HISTORY_FILE.exists():
+        return timestamps, values, item_counts
+
+    with HISTORY_FILE.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            try:
+                timestamps.append(datetime.fromisoformat(row["timestamp"]))
+                values.append(float(row["total_value_eur"]))
+                item_counts.append(int(row["item_count"]))
+            except Exception as e:
+                print(f"WARNING: skipping bad history row {row}: {e}")
+
+    return timestamps, values, item_counts
+
+
+def plot_history() -> None:
+    timestamps, values, item_counts = load_history()
+
+    if not timestamps:
+        print("No history to plot yet.")
+        return
+
+    fig, ax = plt.subplots(figsize=(14, 7))  # 2:1 ratio
+
+    fig.patch.set_facecolor("#101820")
+    ax.set_facecolor("#16213e")
+
+    ax.plot(
+        timestamps,
+        values,
+        color="#00d4ff",
+        linewidth=3,
+        marker="o",
+        markersize=7,
+        markerfacecolor="#ffcc00",
+        markeredgecolor="#ffffff",
+        markeredgewidth=1.4,
+        label="Inventory value",
+    )
+
+    ax.fill_between(
+        timestamps,
+        values,
+        min(values) * 0.995 if values else 0,
+        color="#00d4ff",
+        alpha=0.16,
+    )
+
+    latest_value = values[-1]
+    latest_time = timestamps[-1]
+    latest_count = item_counts[-1] if item_counts else None
+
+    title = f"Osta.ee inventory value for seller '{SELLER}'"
+    subtitle = f"Latest: {latest_value:,.2f} €"
+
+    if latest_count is not None:
+        subtitle += f" | Items: {latest_count}"
+
+    ax.set_title(
+        f"{title}\n{subtitle}",
+        fontsize=18,
+        color="#ffffff",
+        weight="bold",
+        pad=20,
+    )
+
+    ax.set_xlabel("Run timestamp", fontsize=12, color="#d8e2dc", labelpad=12)
+    ax.set_ylabel("Total inventory value (€)", fontsize=12, color="#d8e2dc", labelpad=12)
+
+    ax.grid(True, color="#ffffff", alpha=0.16, linestyle="--", linewidth=0.8)
+
+    ax.tick_params(axis="x", colors="#d8e2dc", labelsize=10)
+    ax.tick_params(axis="y", colors="#d8e2dc", labelsize=10)
+
+    for spine in ax.spines.values():
+        spine.set_color("#d8e2dc")
+        spine.set_alpha(0.35)
+
+    ax.yaxis.set_major_formatter(lambda x, _: f"{x:,.0f} €")
+
+    if len(timestamps) == 1:
+        ax.scatter(
+            timestamps,
+            values,
+            s=180,
+            color="#ffcc00",
+            edgecolors="#ffffff",
+            linewidths=1.6,
+            zorder=5,
+        )
+    else:
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d.%m %H:%M"))
+        fig.autofmt_xdate(rotation=25)
+
+    ax.annotate(
+        f"{latest_value:,.2f} €",
+        xy=(latest_time, latest_value),
+        xytext=(12, 14),
+        textcoords="offset points",
+        color="#ffffff",
+        fontsize=12,
+        weight="bold",
+        bbox=dict(
+            boxstyle="round,pad=0.45",
+            facecolor="#ff006e",
+            edgecolor="#ffffff",
+            alpha=0.9,
+        ),
+        arrowprops=dict(
+            arrowstyle="->",
+            color="#ffffff",
+            lw=1.4,
+        ),
+    )
+
+    ax.legend(
+        loc="best",
+        facecolor="#101820",
+        edgecolor="#ffffff",
+        labelcolor="#ffffff",
+        framealpha=0.6,
+    )
+
+    plt.tight_layout()
+    plt.show()
 
 
 def main():
@@ -238,6 +403,10 @@ def main():
     print("Top 20 most expensive items:")
     for item in sorted(all_items.values(), key=lambda x: x["price"], reverse=True)[:20]:
         print(f'{item["price"]:>8.2f} € | {item["title"]} | {item["url"]}')
+
+    print()
+    save_history_point(total, len(all_items), expected_total)
+    plot_history()
 
 
 if __name__ == "__main__":
