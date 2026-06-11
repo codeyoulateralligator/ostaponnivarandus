@@ -14,8 +14,6 @@ and creates a PDF catalog in:
 cashroll_output/cashroll_catalog.pdf
 ```
 
----
-
 ## 1. Go to your project folder
 
 ```bash
@@ -28,15 +26,11 @@ Or create a new folder:
 mkdir -p ~/Devel/cashroll_pdf && cd ~/Devel/cashroll_pdf
 ```
 
----
-
 ## 2. Create a Python virtual environment
 
 ```bash
 python3 -m venv .venv
 ```
-
----
 
 ## 3. Activate the virtual environment
 
@@ -50,52 +44,27 @@ After activation, your terminal should show something like:
 (.venv) raigo@A224:~/Devel/cashroll_pdf$
 ```
 
----
-
 ## 4. Upgrade pip
 
 ```bash
 python -m pip install --upgrade pip
 ```
 
----
+## 5. Install requirements
 
-## 5. Create `requirements.txt`
-
-Create the file:
-
-```bash
-nano requirements.txt
-```
-
-Paste this:
+This ZIP includes a premade requirements file named:
 
 ```text
-requests
-pillow
-reportlab
-tqdm
+cashroll_requirements.txt
 ```
 
-Save and exit:
-
-```text
-CTRL+O
-ENTER
-CTRL+X
-```
-
----
-
-## 6. Install requirements
+Install it with:
 
 ```bash
-pip install -r requirements.txt
+pip install -r cashroll_requirements.txt
 ```
 
----
-
-## 7. Add the script
+## 6. Add the script
 
 Create the script file:
 
@@ -117,9 +86,7 @@ Make it executable:
 chmod +x cashrollitegija.py
 ```
 
----
-
-## 8. Add the missing-image placeholder
+## 7. Add the missing-image placeholder
 
 The script expects a placeholder image named:
 
@@ -127,12 +94,12 @@ The script expects a placeholder image named:
 missing_note.png
 ```
 
-Put your attached banknote placeholder image in the same folder as the script:
+Put your banknote placeholder image in the same folder as the script:
 
 ```text
 cashrollitegija.py
 missing_note.png
-requirements.txt
+cashroll_requirements.txt
 ```
 
 Example folder layout:
@@ -142,14 +109,12 @@ cashroll_pdf/
 ├── .venv/
 ├── cashrollitegija.py
 ├── missing_note.png
-└── requirements.txt
+└── cashroll_requirements.txt
 ```
 
 The placeholder is used whenever a banknote has no front or back image.
 
----
-
-## 9. Run a small test
+## 8. Run a small test
 
 Run only 16 notes first:
 
@@ -169,9 +134,7 @@ Open it:
 xdg-open cashroll_output/cashroll_catalog.pdf
 ```
 
----
-
-## 10. Run the full export
+## 9. Run the full export
 
 ```bash
 python cashrollitegija.py
@@ -187,9 +150,7 @@ cashroll_output/
 └── images/
 ```
 
----
-
-## 11. Useful commands
+## 10. Useful commands
 
 Run with a custom output PDF name:
 
@@ -215,9 +176,7 @@ Run with a larger delay between requests:
 python cashrollitegija.py --delay 0.1
 ```
 
----
-
-## 12. Deactivate the virtual environment
+## 11. Deactivate the virtual environment
 
 When finished:
 
@@ -225,9 +184,7 @@ When finished:
 deactivate
 ```
 
----
-
-## 13. Reactivate later
+## 12. Reactivate later
 
 Next time you return to the project:
 
@@ -241,8 +198,6 @@ Then run:
 python cashrollitegija.py
 ```
 
----
-
 ## Troubleshooting
 
 ### `ModuleNotFoundError: No module named 'requests'`
@@ -252,10 +207,8 @@ Your virtual environment is not active or requirements were not installed.
 Fix:
 
 ```bash
-source .venv/bin/activate && pip install -r requirements.txt
+source .venv/bin/activate && pip install -r cashroll_requirements.txt
 ```
-
----
 
 ### `missing_note.png` warning
 
@@ -267,9 +220,7 @@ Fix: put the banknote placeholder image next to the script and name it:
 missing_note.png
 ```
 
----
-
-### PDF is old / unchanged
+### PDF is old or unchanged
 
 Delete old output and run again:
 
@@ -277,20 +228,14 @@ Delete old output and run again:
 rm -rf cashroll_output && python cashrollitegija.py
 ```
 
----
-
 ### Check installed packages
 
 ```bash
 pip list
 ```
 
----
-
-### Save exact package versions
-
-After everything works:
+### Save exact package versions after everything works
 
 ```bash
-pip freeze > requirements.txt
+pip freeze > cashroll_requirements_locked.txt
 ```
