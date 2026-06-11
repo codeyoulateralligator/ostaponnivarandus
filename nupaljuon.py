@@ -414,18 +414,27 @@ def print_top_items(all_items: dict[str, dict], top_n: int = 20) -> None:
 
     table.add_column("#", justify="right", style="bold cyan", width=4)
     table.add_column("Price", justify="right", style="bold bright_yellow", width=12)
-    table.add_column("Title", style="white", overflow="fold", max_width=70)
-    table.add_column("URL", style="bright_black", overflow="fold", max_width=45)
+    table.add_column("Title", style="white", overflow="fold", max_width=86)
+    table.add_column("Link", justify="center", style="bold bright_blue", width=10)
 
     for index, item in enumerate(sorted_items, start=1):
+        url = item["url"]
+
         table.add_row(
             str(index),
             f'{item["price"]:.2f} €',
             item["title"],
-            item["url"],
+            f"[link={url}]open[/link]",
         )
 
     console.print(table)
+
+    console.print()
+    console.print("[bold cyan]Full URLs for top items:[/bold cyan]")
+
+    for index, item in enumerate(sorted_items, start=1):
+        console.print(f'{index}. {item["price"]:.2f} € | {item["title"]}')
+        console.print(f'   [link={item["url"]}]{item["url"]}[/link]')
 
 
 def scrape_all(max_pages: int, delay: float) -> tuple[dict[str, dict], int | None, int]:
