@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import csv
 import re
 import time
@@ -16,10 +17,21 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from bs4 import BeautifulSoup, Tag
 from curl_cffi import requests
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 
 SELLER = "ostaponn"
 HISTORY_FILE = Path("osta_inventory_history.csv")
+
+ITEM_RE = re.compile(r"/?([^/]+)-(\d{6,})\.html(?:[?#].*)?$")
+PRICE_RE = re.compile(r"(\d+(?:[.,]\d{1,2})?)\s*€")
+TOTAL_RE = re.compile(r"Aktiivsed müügid\s+(\d+)|(\d+)\s+tulemust", re.I)
+
+console = Console()
 
 
 def canonical_seller_page_url(start: int | None = None) -> str:
@@ -37,10 +49,6 @@ def canonical_seller_page_url(start: int | None = None) -> str:
 
 
 START_URL = canonical_seller_page_url(None)
-
-ITEM_RE = re.compile(r"/?([^/]+)-(\d{6,})\.html(?:[?#].*)?$")
-PRICE_RE = re.compile(r"(\d+(?:[.,]\d{1,2})?)\s*€")
-TOTAL_RE = re.compile(r"Aktiivsed müügid\s+(\d+)|(\d+)\s+tulemust", re.I)
 
 
 def money_to_decimal(text: str) -> Decimal | None:
@@ -90,9 +98,10 @@ def fetch_html(session, url: str) -> str:
     )
 
     if response.status_code == 403:
+        Path("debug_403.html").write_text(response.text, encoding="utf-8", errors="ignore")
         raise RuntimeError(
             "Got 403 Forbidden even with browser impersonation. "
-            "Osta.ee may be temporarily blocking scraping from your IP."
+            "Saved response to debug_403.html."
         )
 
     response.raise_for_status()
@@ -141,7 +150,7 @@ def extract_items_from_page(soup: BeautifulSoup, page_url: str) -> dict[str, dic
                     break
 
         if price is None:
-            print(f"WARNING: no price found: {title} | {item_url}")
+            console.print(f"[yellow]WARNING:[/yellow] no price found: {title} | {item_url}")
             continue
 
         items[item_id] = {
@@ -156,7 +165,6 @@ def extract_items_from_page(soup: BeautifulSoup, page_url: str) -> dict[str, dic
 def normalize_seller_page_url(url: str) -> str | None:
     parsed = urlparse(url)
 
-    # Reject /en, /ru, and other language/path variants.
     if parsed.path not in ("", "/"):
         return None
 
@@ -194,6 +202,22 @@ def extract_next_page_urls(soup: BeautifulSoup, current_url: str) -> set[str]:
     return urls
 
 
+def save_items_csv(items: dict[str, dict], path: Path) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["item_id", "title", "price_eur", "url"])
+
+        for item_id, item in sorted(items.items(), key=lambda x: x[1]["price"], reverse=True):
+            writer.writerow([
+                item_id,
+                item["title"],
+                f'{item["price"]:.2f}',
+                item["url"],
+            ])
+
+    console.print(f"[green]Saved items CSV:[/green] {path}")
+
+
 def save_history_point(total_value: Decimal, item_count: int, expected_count: int | None) -> None:
     timestamp = datetime.now().isoformat(timespec="seconds")
     file_exists = HISTORY_FILE.exists()
@@ -211,7 +235,7 @@ def save_history_point(total_value: Decimal, item_count: int, expected_count: in
             expected_count if expected_count is not None else "",
         ])
 
-    print(f"Saved history point to {HISTORY_FILE}: {timestamp} | {total_value:.2f} €")
+    console.print(f"[green]Saved history point:[/green] {HISTORY_FILE} | {timestamp} | {total_value:.2f} €")
 
 
 def load_history() -> tuple[list[datetime], list[float], list[int]]:
@@ -231,7 +255,7 @@ def load_history() -> tuple[list[datetime], list[float], list[int]]:
                 values.append(float(row["total_value_eur"]))
                 item_counts.append(int(row["item_count"]))
             except Exception as e:
-                print(f"WARNING: skipping bad history row {row}: {e}")
+                console.print(f"[yellow]WARNING:[/yellow] skipping bad history row {row}: {e}")
 
     return timestamps, values, item_counts
 
@@ -240,10 +264,10 @@ def plot_history() -> None:
     timestamps, values, item_counts = load_history()
 
     if not timestamps:
-        print("No history to plot yet.")
+        console.print("[yellow]No history to plot yet.[/yellow]")
         return
 
-    fig, ax = plt.subplots(figsize=(14, 7))  # 2:1 ratio
+    fig, ax = plt.subplots(figsize=(14, 7))
 
     fig.patch.set_facecolor("#101820")
     ax.set_facecolor("#16213e")
@@ -349,7 +373,62 @@ def plot_history() -> None:
     plt.show()
 
 
-def main():
+def print_fancy_total(total: Decimal, item_count: int, expected_total: int | None) -> None:
+    text = Text()
+    text.append("💰✨ TOTAL INVENTORY VALUE ✨💰\n\n", style="bold bright_yellow")
+    text.append("🏦  ", style="bold bright_white")
+    text.append(f"{total:.2f} €", style="bold bright_green")
+    text.append("  🏦\n\n", style="bold bright_white")
+    text.append("📦 Unique items counted: ", style="bold cyan")
+    text.append(str(item_count), style="bold bright_white")
+
+    if expected_total is not None:
+        text.append("\n🎯 Expected active listings: ", style="bold magenta")
+        text.append(str(expected_total), style="bold bright_white")
+
+    text.append("\n\n🧾 Ostaponn stock treasure counted successfully! 💎", style="bold bright_cyan")
+
+    console.print()
+    console.print(
+        Panel(
+            text,
+            title="🪙  OSTAPONNI VARANDUS  🪙",
+            subtitle="💎 inventory scan complete 💎",
+            border_style="bright_magenta",
+            box=box.DOUBLE,
+            padding=(1, 4),
+        )
+    )
+    console.print()
+
+
+def print_top_items(all_items: dict[str, dict], top_n: int = 20) -> None:
+    sorted_items = sorted(all_items.values(), key=lambda x: x["price"], reverse=True)[:top_n]
+
+    table = Table(
+        title=f"🏆 Top {len(sorted_items)} most expensive items",
+        box=box.ROUNDED,
+        header_style="bold white on dark_green",
+        row_styles=["none", "dim"],
+    )
+
+    table.add_column("#", justify="right", style="bold cyan", width=4)
+    table.add_column("Price", justify="right", style="bold bright_yellow", width=12)
+    table.add_column("Title", style="white", overflow="fold", max_width=70)
+    table.add_column("URL", style="bright_black", overflow="fold", max_width=45)
+
+    for index, item in enumerate(sorted_items, start=1):
+        table.add_row(
+            str(index),
+            f'{item["price"]:.2f} €',
+            item["title"],
+            item["url"],
+        )
+
+    console.print(table)
+
+
+def scrape_all(max_pages: int, delay: float) -> tuple[dict[str, dict], int | None, int]:
     session = requests.Session()
 
     to_visit = [START_URL]
@@ -358,13 +437,17 @@ def main():
     expected_total = None
 
     while to_visit:
+        if len(visited) >= max_pages:
+            console.print(f"[yellow]Stopping: reached max pages: {max_pages}[/yellow]")
+            break
+
         url = to_visit.pop(0)
 
         if url in visited:
             continue
 
         visited.add(url)
-        print(f"Fetching page {len(visited)}: {url}")
+        console.print(f"[cyan]Fetching page {len(visited)}:[/cyan] {url}")
 
         html = fetch_html(session, url)
         soup = BeautifulSoup(html, "html.parser")
@@ -373,40 +456,60 @@ def main():
             expected_total = extract_expected_total(soup)
 
         page_items = extract_items_from_page(soup, url)
-        print(f"  Found {len(page_items)} items on this page")
+        console.print(f"  Found [green]{len(page_items)}[/green] items on this page")
 
+        before = len(all_items)
         all_items.update(page_items)
+        after = len(all_items)
+
+        console.print(f"  New unique items: [yellow]{after - before}[/yellow]")
+        console.print(f"  Total unique items: [bold cyan]{after}[/bold cyan]")
 
         for next_url in sorted(extract_next_page_urls(soup, url)):
             if next_url not in visited and next_url not in to_visit:
                 to_visit.append(next_url)
 
-        time.sleep(0.8)
+        time.sleep(delay)
+
+    return all_items, expected_total, len(visited)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--max-pages", type=int, default=30)
+    parser.add_argument("--delay", type=float, default=0.8)
+    parser.add_argument("--no-plot", action="store_true")
+    parser.add_argument("--items-csv", default="osta_inventory_items.csv")
+    parser.add_argument("--top", type=int, default=20)
+    args = parser.parse_args()
+
+    all_items, expected_total, pages_fetched = scrape_all(
+        max_pages=args.max_pages,
+        delay=args.delay,
+    )
 
     total = sum(item["price"] for item in all_items.values())
 
-    print()
-    print(f"Pages fetched: {len(visited)}")
-    print(f"Unique items found: {len(all_items)}")
+    console.print()
+    console.print(f"[bold]Pages fetched:[/bold] [cyan]{pages_fetched}[/cyan]")
+    console.print(f"[bold]Unique items found:[/bold] [cyan]{len(all_items)}[/cyan]")
 
     if expected_total is not None:
-        print(f"Expected active listings: {expected_total}")
+        console.print(f"[bold]Expected active listings:[/bold] [cyan]{expected_total}[/cyan]")
 
-    print(f"Total inventory value: {total:.2f} €")
+    print_fancy_total(total, len(all_items), expected_total)
 
     if expected_total is not None and len(all_items) != expected_total:
-        print()
-        print("WARNING: item count does not match expected active listings.")
-        print("Some items may have ended/started while scraping, or Osta.ee changed the page HTML.")
+        console.print()
+        console.print("[yellow]WARNING:[/yellow] item count does not match expected active listings.")
+        console.print("[yellow]Some items may have ended/started while scraping, or Osta.ee changed page HTML.[/yellow]")
 
-    print()
-    print("Top 20 most expensive items:")
-    for item in sorted(all_items.values(), key=lambda x: x["price"], reverse=True)[:20]:
-        print(f'{item["price"]:>8.2f} € | {item["title"]} | {item["url"]}')
-
-    print()
+    print_top_items(all_items, top_n=args.top)
+    save_items_csv(all_items, Path(args.items_csv))
     save_history_point(total, len(all_items), expected_total)
-    plot_history()
+
+    if not args.no_plot:
+        plot_history()
 
 
 if __name__ == "__main__":
