@@ -1,4 +1,4 @@
-# Cashroll PDF Catalog Generator
+# Ostaponn cashroll helper
 <img width="1672" height="941" alt="c121fe5a-ef6b-4e5c-b918-482244b16210" src="https://github.com/user-attachments/assets/2d6e2da0-1631-4b23-88a3-66aa70ebd974" />
 
 This project creates a PDF catalog from the ca$hroll banknote collection site.
