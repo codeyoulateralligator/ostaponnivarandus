@@ -1,7 +1,6 @@
 # Ostaponn ca$hroll helper
-<img width="1672" height="941" alt="ostaponn_money" src="https://github.com/user-attachments/assets/82a814c1-6b14-432b-9cae-bdddeed79a9f" />
-
-<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/9a7d026a-a64d-4b2a-9703-7c0397328472" />
+<img width="1672" height="941" alt="ostaponn_money" src="https://github.com/user-attachments/assets/66e4f34b-0eb4-4311-ba84-867e5e2a89ab" />
+<img width="1672" height="941" alt="ostaponn_back" src="https://github.com/user-attachments/assets/a4fa1774-6fa4-4316-a842-1b47916eefab" />
 
 This project creates a PDF catalog from the ca$hroll banknote collection site.
 
