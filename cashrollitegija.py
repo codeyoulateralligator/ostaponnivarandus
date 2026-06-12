@@ -19,8 +19,9 @@ from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, portrait
 from reportlab.lib.units import mm
-from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from rich import box
 from rich.console import Console
@@ -195,8 +196,6 @@ def find_title_money_image(path_arg: str = "") -> Optional[str]:
 
     candidates.extend([
         DEFAULT_TITLE_MONEY_IMAGE,
-        Path("ostaponn(1).png"),
-        Path("ostaponn.png"),
     ])
 
     for p in candidates:
@@ -204,6 +203,64 @@ def find_title_money_image(path_arg: str = "") -> Optional[str]:
             return str(p.resolve())
 
     return None
+
+
+def register_title_fonts() -> tuple[str, str]:
+    """
+    Uses Cinzel Decorative if CinzelDecorative-Bold.ttf exists next to this script.
+    Safe to call multiple times.
+    """
+    font_name = "TitleFont"
+
+    try:
+        if font_name in pdfmetrics.getRegisteredFontNames():
+            return font_name, font_name
+
+        script_dir = Path(__file__).resolve().parent
+        candidates = [
+            script_dir / "CinzelDecorative-Bold.ttf",
+            Path("CinzelDecorative-Bold.ttf"),
+        ]
+
+        for font_path in candidates:
+            if font_path.exists():
+                pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+                return font_name, font_name
+
+        print("WARNING: CinzelDecorative-Bold.ttf not found. Falling back to Times-Bold.")
+
+    except Exception as e:
+        print(f"WARNING: failed to register title font: {e}")
+
+    return "Times-Bold", "Times-Bold"
+
+
+def note_has_real_image(note: Note) -> bool:
+    placeholder = get_placeholder_path()
+
+    for img in [note.front_image, note.back_image]:
+        if not img:
+            continue
+
+        img_path = Path(img)
+
+        if not img_path.exists():
+            continue
+
+        if placeholder and Path(placeholder).resolve() == img_path.resolve():
+            continue
+
+        return True
+
+    return False
+
+
+def count_notes_with_images(notes: list[Note]) -> int:
+    return sum(1 for note in notes if note_has_real_image(note))
+
+
+def format_estonian_datetime(dt: datetime) -> str:
+    return dt.strftime("%d.%m.%Y %H:%M")
 
 
 def download_image(session: requests.Session, url: str) -> Optional[str]:
@@ -594,30 +651,35 @@ def draw_image_plain_fit(
     y: float,
     w: float,
     h: float,
-) -> None:
+) -> tuple[float, float, float, float]:
     if not path or not Path(path).exists():
         c.setFillColor(colors.HexColor("#75622f"))
         c.setFont("Helvetica-Bold", 16)
         c.drawCentredString(x + w / 2, y + h / 2, "Missing title image")
-        return
+        return x, y, w, h
 
     iw, ih = image_size(path)
     if iw <= 0 or ih <= 0:
-        return
+        return x, y, w, h
 
     scale = min(w / iw, h / ih)
     dw = iw * scale
     dh = ih * scale
 
+    dx = x + (w - dw) / 2
+    dy = y + (h - dh) / 2
+
     c.drawImage(
         path,
-        x + (w - dw) / 2,
-        y + (h - dh) / 2,
+        dx,
+        dy,
         dw,
         dh,
         preserveAspectRatio=True,
         mask="auto",
     )
+
+    return dx, dy, dw, dh
 
 
 def wrap_text_to_width(text: str, font_name: str, font_size: float, max_width_pt: float) -> list[str]:
@@ -826,6 +888,8 @@ def compute_inventory_summary(notes: list[Note]) -> dict[str, Any]:
     shipping_total = Decimal("0")
     total_with_shipping = Decimal("0")
 
+    image_count = count_notes_with_images(notes)
+
     for note in notes:
         raw_price = money_str_to_decimal(note.item_price_eur)
         shipping = money_str_to_decimal(note.shipping_eur)
@@ -851,6 +915,7 @@ def compute_inventory_summary(notes: list[Note]) -> dict[str, Any]:
 
     return {
         "total_notes": len(notes),
+        "image_count": image_count,
         "priced_count": len(priced_notes),
         "missing_price_count": len(missing_price_notes),
         "raw_total": raw_total,
@@ -874,6 +939,7 @@ def print_inventory_stats(notes: list[Note], top_n: int = 100) -> None:
     console.rule("[bold cyan]Inventory statistics")
 
     console.print(f"[bold]Total notes processed:[/bold] [cyan]{summary['total_notes']}[/cyan]")
+    console.print(f"[bold]Notes with images:[/bold] [green]{summary['image_count']}/{summary['total_notes']}[/green]")
     console.print(f"[bold]Notes with raw price:[/bold] [green]{summary['priced_count']}[/green]")
     console.print(f"[bold]Notes missing raw price:[/bold] [red]{summary['missing_price_count']}[/red]")
     console.print(f"[bold]Total inventory value, raw price only:[/bold] [bold yellow]{summary['raw_total']:.2f} €[/bold yellow]")
@@ -946,9 +1012,6 @@ def draw_multiline_text(
     line_h: float,
     max_lines: int,
 ) -> float:
-    """
-    Draw wrapped text and return the next y position below it.
-    """
     lines = wrap_text_to_width(text, font_name, font_size, max_width_pt)
 
     if len(lines) > max_lines:
@@ -964,6 +1027,7 @@ def draw_multiline_text(
         yy -= line_h
 
     return yy
+
 
 def draw_description_box(
     c: canvas.Canvas,
@@ -988,7 +1052,6 @@ def draw_description_box(
 
     c.setFillColor(colors.HexColor("#0f172a"))
 
-    # Multiline title instead of cutting it.
     after_title_y = draw_multiline_text(
         c=c,
         text=title,
@@ -1001,7 +1064,6 @@ def draw_description_box(
         max_lines=3,
     )
 
-    # Small gap below title.
     details_top = after_title_y - 1.5
     available_h = details_top - y - inner_pad - 4.0
 
@@ -1088,6 +1150,8 @@ def draw_cover_summary_table(
 
     c.saveState()
 
+    title_font, table_font = register_title_fonts()
+
     c.setFillColor(pale)
     c.setStrokeColor(gold)
     c.setLineWidth(1.3)
@@ -1098,18 +1162,19 @@ def draw_cover_summary_table(
     c.roundRect(x + 6, y + h - header_h - 6, w - 12, header_h, 5, stroke=0, fill=1)
 
     c.setFillColor(colors.HexColor("#f4e7bf"))
-    c.setFont("Helvetica-Bold", 9.2)
-    c.drawCentredString(x + w / 2, y + h - header_h / 2 - 9.2, "KOGU KOLLEKTSIOONI KOKKUVÕTE")
+    c.setFont(title_font, 8.6)
+    c.drawCentredString(
+        x + w / 2,
+        y + h - header_h / 2 - 9.2,
+        "KOGU KOLLEKTSIOONI KOKKUVÕTE",
+    )
 
     rows = [
         ("Kirjeid kokku", str(summary["total_notes"])),
-        ("Hinnastatud kirjeid", str(summary["priced_count"])),
-        ("Hinnata kirjeid", str(summary["missing_price_count"])),
-        ("Toorhindade summa", f"{summary['raw_total']:.2f} €"),
-        ("Saatmiskulude summa", f"{summary['shipping_total']:.2f} €"),
-        ("Kokku koos saatmisega", f"{summary['total_with_shipping']:.2f} €"),
-        ("Keskmine toorhind", f"{summary['avg_raw']:.2f} €"),
-        ("Koostatud", summary["created_at"].strftime("%Y-%m-%d %H:%M")),
+        ("Pildiga kirjeid", f"{summary['image_count']}/{summary['total_notes']}"),
+        ("Hinnastatud kirjeid", f"{summary['priced_count']}/{summary['total_notes']}"),
+        ("Kollektsiooni väärtus", f"{summary['raw_total']:.2f} €"),
+        ("Koostatud", format_estonian_datetime(summary["created_at"])),
     ]
 
     inner_x = x + 10
@@ -1131,11 +1196,11 @@ def draw_cover_summary_table(
         c.line(inner_x, ry, inner_x + inner_w, ry)
 
         c.setFillColor(dark_green)
-        c.setFont("Helvetica-Bold", 8.6)
+        c.setFont(table_font, 8.2)
         c.drawString(inner_x + 5, ry + row_h / 2 - 3.0, label)
 
         c.setFillColor(colors.HexColor("#4b3718"))
-        c.setFont("Helvetica-Bold", 8.8)
+        c.setFont(table_font, 8.4)
         c.drawRightString(inner_x + inner_w - 5, ry + row_h / 2 - 3.0, value)
 
     c.restoreState()
@@ -1153,7 +1218,6 @@ def draw_title_page(
     cream = colors.HexColor("#eee8d8")
     dark_green = colors.HexColor("#102f2a")
     gold = colors.HexColor("#b9923c")
-    pale_gold = colors.HexColor("#e8d39a")
     brown = colors.HexColor("#4b3718")
 
     c.setFillColor(cream)
@@ -1163,60 +1227,50 @@ def draw_title_page(
     c.setStrokeColor(gold)
     c.setLineWidth(1.4)
     c.roundRect(margin, margin, page_w - 2 * margin, page_h - 2 * margin, 10, stroke=1, fill=0)
+
     c.setStrokeColor(colors.HexColor("#d7c48f"))
     c.setLineWidth(0.8)
-    c.roundRect(margin + 4, margin + 4, page_w - 2 * (margin + 4), page_h - 2 * (margin + 4), 9, stroke=1, fill=0)
+    c.roundRect(
+        margin + 4,
+        margin + 4,
+        page_w - 2 * (margin + 4),
+        page_h - 2 * (margin + 4),
+        9,
+        stroke=1,
+        fill=0,
+    )
+
+    title_font, subtitle_font = register_title_fonts()
 
     c.setFillColor(dark_green)
-    c.setFont("Helvetica-Bold", 22)
+    c.setFont(title_font, 20)
     c.drawCentredString(page_w / 2, page_h - 21 * mm, "Ostaponni paberrahade kataloog")
 
     c.setFillColor(brown)
-    c.setFont("Helvetica", 10.5)
-    c.drawCentredString(page_w / 2, page_h - 27 * mm, "Kollektsioon, hinnad ja ülevaade")
+    c.setFont(subtitle_font, 10.5)
+    c.drawCentredString(page_w / 2, page_h - 27 * mm, "Jõukus, rikkus, võimsus")
 
-    image_box_w = page_w - 28 * mm
-    image_box_h = 96 * mm
+    # MONEY IMAGE WITHOUT ANY BORDER/FRAME
+    image_box_w = page_w - 14 * mm
+    image_box_h = 102 * mm
     image_box_x = (page_w - image_box_w) / 2
-    image_box_y = page_h - 36 * mm - image_box_h
+    image_box_y = page_h - 38 * mm - image_box_h
 
-    c.setFillColor(colors.HexColor("#f8f2df"))
-    c.setStrokeColor(gold)
-    c.setLineWidth(1.3)
-    c.roundRect(image_box_x, image_box_y, image_box_w, image_box_h, 8, stroke=1, fill=1)
-
-    c.setStrokeColor(dark_green)
-    c.setLineWidth(0.8)
-    c.roundRect(image_box_x + 4, image_box_y + 4, image_box_w - 8, image_box_h - 8, 6, stroke=1, fill=0)
-
-    draw_image_plain_fit(
+    money_x, money_y, money_w, money_h = draw_image_plain_fit(
         c,
         title_money_image,
-        image_box_x + 7,
-        image_box_y + 7,
-        image_box_w - 14,
-        image_box_h - 14,
+        image_box_x,
+        image_box_y,
+        image_box_w,
+        image_box_h,
     )
 
-    table_w = page_w - 44 * mm
-    table_h = 76 * mm
-    table_x = (page_w - table_w) / 2
-    table_y = image_box_y - table_h - 14 * mm
+    table_w = money_w
+    table_h = 68 * mm
+    table_x = money_x
+    table_y = money_y - table_h - 12 * mm
 
     draw_cover_summary_table(c, table_x, table_y, table_w, table_h, summary)
-
-    c.setFillColor(pale_gold)
-    c.setStrokeColor(gold)
-    c.setLineWidth(0.6)
-    c.roundRect(page_w / 2 - 38 * mm, 16 * mm, 76 * mm, 10 * mm, 4, stroke=1, fill=1)
-
-    c.setFillColor(dark_green)
-    c.setFont("Helvetica-Bold", 7.8)
-    c.drawCentredString(
-        page_w / 2,
-        19.2 * mm,
-        f"Genereeritud {summary['created_at'].strftime('%Y-%m-%d %H:%M')}"
-    )
 
 
 def make_pdf(
@@ -1298,7 +1352,7 @@ def main() -> None:
         print()
         print("WARNING: Title money image not found.")
         print("Save it as 'ostaponn_money.png' next to this script, or use:")
-        print('  --title-money-image "ostaponn(1).png"')
+        print('  --title-money-image "xxx.png"')
         print()
 
     session = requests.Session()
