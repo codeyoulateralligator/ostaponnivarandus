@@ -237,8 +237,18 @@ def register_title_fonts() -> tuple[str, str]:
 
 def register_body_fonts() -> tuple[str, str]:
     """
-    Uses Nimbus Sans from the project root for note-card text.
-    Keeps title-page fonts unchanged.
+    Uses Nimbus Sans from the project root for note-card textboxes.
+
+    Regular file names supported:
+        NimbusSans-Regular.ttf / .otf
+        nimbus-sans-l.regular.ttf / .otf
+
+    Bold file names supported:
+        NimbusSans-Bold.ttf / .otf
+        nimbus-sans-l.bold.ttf / .otf
+
+    The textbox title line uses the bold font returned here.
+    The title page is intentionally unchanged and still uses register_title_fonts().
     """
     regular_name = "MoneyTableFont"
     bold_name = "MoneyTableFontBold"
@@ -275,25 +285,29 @@ def register_body_fonts() -> tuple[str, str]:
         regular_path = next((path for path in regular_candidates if path.exists()), None)
         bold_path = next((path for path in bold_candidates if path.exists()), None)
 
-        if regular_path:
-            if regular_name not in registered:
-                pdfmetrics.registerFont(TTFont(regular_name, str(regular_path)))
+        if regular_path and regular_name not in registered:
+            pdfmetrics.registerFont(TTFont(regular_name, str(regular_path)))
 
-            # If no bold Nimbus file exists, reuse regular. This preserves Unicode glyphs.
-            if bold_path:
-                if bold_name not in pdfmetrics.getRegisteredFontNames():
-                    pdfmetrics.registerFont(TTFont(bold_name, str(bold_path)))
-                return regular_name, bold_name
+        if bold_path and bold_name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(bold_name, str(bold_path)))
 
+        if regular_path and bold_path:
+            return regular_name, bold_name
+
+        if regular_path and not bold_path:
+            print("WARNING: NimbusSans-Bold.ttf not found. Textbox titles will use regular Nimbus Sans.")
             return regular_name, regular_name
 
-        print("WARNING: Nimbus Sans font not found. Falling back to Helvetica for money tables.")
+        if bold_path and not regular_path:
+            print("WARNING: NimbusSans-Regular.ttf not found. Textbox body will use Helvetica, titles will use Nimbus Sans Bold.")
+            return "Helvetica", bold_name
+
+        print("WARNING: Nimbus Sans fonts not found. Falling back to Helvetica for note textboxes.")
 
     except Exception as e:
-        print(f"WARNING: failed to register Nimbus Sans body font: {e}")
+        print(f"WARNING: failed to register Nimbus Sans body fonts: {e}")
 
     return "Helvetica", "Helvetica-Bold"
-
 
 def note_has_real_image(note: Note) -> bool:
     placeholder = get_placeholder_path()
@@ -1117,6 +1131,7 @@ def draw_description_box(
 
     c.setFillColor(colors.HexColor("#0f172a"))
 
+    # Textbox title: force NimbusSans-Bold.ttf when it exists in the project root.
     after_title_y = draw_multiline_text(
         c=c,
         text=title,
@@ -1124,7 +1139,7 @@ def draw_description_box(
         y=top_y,
         max_width_pt=max_text_w,
         font_name=body_bold_font,
-        font_size=5.8,
+        font_size=6.2,
         line_h=6.0,
         max_lines=3,
     )
