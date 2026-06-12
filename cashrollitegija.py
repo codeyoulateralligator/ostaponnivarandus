@@ -935,7 +935,7 @@ def note_detail_lines(note: Note) -> list[tuple[str, str, bool]]:
 
     cost = cost_display(note)
     if cost:
-        lines.append(("Cost: ", cost, True))
+        lines.append(("Cost: ", cost, False))
 
     normal = [
         ("Country: ", note.country),
