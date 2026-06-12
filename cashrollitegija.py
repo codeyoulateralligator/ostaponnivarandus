@@ -235,6 +235,66 @@ def register_title_fonts() -> tuple[str, str]:
     return "Times-Bold", "Times-Bold"
 
 
+def register_body_fonts() -> tuple[str, str]:
+    """
+    Uses Nimbus Sans from the project root for note-card text.
+    Keeps title-page fonts unchanged.
+    """
+    regular_name = "MoneyTableFont"
+    bold_name = "MoneyTableFontBold"
+
+    try:
+        registered = set(pdfmetrics.getRegisteredFontNames())
+        if regular_name in registered and bold_name in registered:
+            return regular_name, bold_name
+
+        script_dir = Path(__file__).resolve().parent
+
+        regular_candidates = [
+            script_dir / "NimbusSans-Regular.ttf",
+            script_dir / "NimbusSans-Regular.otf",
+            script_dir / "nimbus-sans-l.regular.ttf",
+            script_dir / "nimbus-sans-l.regular.otf",
+            Path("NimbusSans-Regular.ttf"),
+            Path("NimbusSans-Regular.otf"),
+            Path("nimbus-sans-l.regular.ttf"),
+            Path("nimbus-sans-l.regular.otf"),
+        ]
+
+        bold_candidates = [
+            script_dir / "NimbusSans-Bold.ttf",
+            script_dir / "NimbusSans-Bold.otf",
+            script_dir / "nimbus-sans-l.bold.ttf",
+            script_dir / "nimbus-sans-l.bold.otf",
+            Path("NimbusSans-Bold.ttf"),
+            Path("NimbusSans-Bold.otf"),
+            Path("nimbus-sans-l.bold.ttf"),
+            Path("nimbus-sans-l.bold.otf"),
+        ]
+
+        regular_path = next((path for path in regular_candidates if path.exists()), None)
+        bold_path = next((path for path in bold_candidates if path.exists()), None)
+
+        if regular_path:
+            if regular_name not in registered:
+                pdfmetrics.registerFont(TTFont(regular_name, str(regular_path)))
+
+            # If no bold Nimbus file exists, reuse regular. This preserves Unicode glyphs.
+            if bold_path:
+                if bold_name not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont(bold_name, str(bold_path)))
+                return regular_name, bold_name
+
+            return regular_name, regular_name
+
+        print("WARNING: Nimbus Sans font not found. Falling back to Helvetica for money tables.")
+
+    except Exception as e:
+        print(f"WARNING: failed to register Nimbus Sans body font: {e}")
+
+    return "Helvetica", "Helvetica-Bold"
+
+
 def note_has_real_image(note: Note) -> bool:
     placeholder = get_placeholder_path()
 
@@ -714,16 +774,18 @@ def build_label_value_rendered_lines(
     lines: list[tuple[str, str, bool]],
     size: float,
     max_width_pt: float,
+    regular_font: str = "Helvetica",
+    bold_font: str = "Helvetica-Bold",
 ) -> list[tuple]:
     rendered_lines = []
 
     for label, value, whole_bold in lines:
         if whole_bold:
             text = f"{label}{value}"
-            wrapped = wrap_text_to_width(text, "Helvetica-Bold", size, max_width_pt)
+            wrapped = wrap_text_to_width(text, bold_font, size, max_width_pt)
             rendered_lines.extend([("BOLD_FULL", w) for w in wrapped])
         else:
-            prefix_w = stringWidth(label, "Helvetica-Bold", size)
+            prefix_w = stringWidth(label, bold_font, size)
             available_for_first_value = max_width_pt - prefix_w
             value_words = value.split()
 
@@ -738,7 +800,7 @@ def build_label_value_rendered_lines(
                 test = word if not current else f"{current} {word}"
                 limit = available_for_first_value if not first_line_done else max_width_pt
 
-                if stringWidth(test, "Helvetica", size) <= limit:
+                if stringWidth(test, regular_font, size) <= limit:
                     current = test
                 else:
                     if not first_line_done:
@@ -766,12 +828,14 @@ def draw_label_value_lines(
     max_height_pt: float,
     start_size: float = 5.4,
     min_size: float = 4.1,
+    regular_font: str = "Helvetica",
+    bold_font: str = "Helvetica-Bold",
 ) -> None:
     size = start_size
     best_lines = []
 
     while size >= min_size:
-        rendered_lines = build_label_value_rendered_lines(lines, size, max_width_pt)
+        rendered_lines = build_label_value_rendered_lines(lines, size, max_width_pt, regular_font, bold_font)
         line_h = size * 1.12
 
         if len(rendered_lines) * line_h <= max_height_pt:
@@ -782,7 +846,7 @@ def draw_label_value_lines(
 
     if size < min_size:
         size = min_size
-        best_lines = build_label_value_rendered_lines(lines, size, max_width_pt)
+        best_lines = build_label_value_rendered_lines(lines, size, max_width_pt, regular_font, bold_font)
 
     line_h = size * 1.12
     max_lines = max(1, int(max_height_pt / line_h))
@@ -802,18 +866,18 @@ def draw_label_value_lines(
     for item in rendered_lines:
         if item[0] == "BOLD_FULL":
             _, text = item
-            c.setFont("Helvetica-Bold", size)
+            c.setFont(bold_font, size)
             c.drawString(x, yy, text)
         elif item[0] == "LABEL_VALUE":
             _, label, value = item
-            c.setFont("Helvetica-Bold", size)
+            c.setFont(bold_font, size)
             c.drawString(x, yy, label)
-            label_w = stringWidth(label, "Helvetica-Bold", size)
-            c.setFont("Helvetica", size)
+            label_w = stringWidth(label, bold_font, size)
+            c.setFont(regular_font, size)
             c.drawString(x + label_w, yy, value)
         else:
             _, text = item
-            c.setFont("Helvetica", size)
+            c.setFont(regular_font, size)
             c.drawString(x, yy, text)
 
         yy -= line_h
@@ -1049,6 +1113,7 @@ def draw_description_box(
     max_text_w = w - 2 * inner_pad
 
     title = note_title(note)
+    body_font, body_bold_font = register_body_fonts()
 
     c.setFillColor(colors.HexColor("#0f172a"))
 
@@ -1058,7 +1123,7 @@ def draw_description_box(
         x=tx,
         y=top_y,
         max_width_pt=max_text_w,
-        font_name="Helvetica-Bold",
+        font_name=body_bold_font,
         font_size=5.8,
         line_h=6.0,
         max_lines=3,
@@ -1078,10 +1143,12 @@ def draw_description_box(
         max_height_pt=available_h,
         start_size=5.15,
         min_size=3.7,
+        regular_font=body_font,
+        bold_font=body_bold_font,
     )
 
     c.setFillColor(colors.HexColor("#64748b"))
-    c.setFont("Helvetica", 5.0)
+    c.setFont(body_font, 5.0)
     c.drawRightString(x + w - inner_pad, y + inner_pad, f"#{idx + 1} | ID {note.item_id}")
 
 
